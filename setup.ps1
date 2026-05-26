@@ -12,7 +12,27 @@ $apps = @(
 )
 
 Write-Host "`n=== Windows Setup ===" -ForegroundColor Cyan
-Write-Host "Installing $($apps.Count) apps via winget...`n" -ForegroundColor Gray
+
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Write-Host "winget not found. Installing..." -ForegroundColor Yellow
+    $installer = "$env:TEMP\AppInstaller.msixbundle"
+    Invoke-WebRequest -Uri "https://aka.ms/getwinget" -OutFile $installer -UseBasicParsing
+    Add-AppxPackage -Path $installer
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Host "ERROR: winget install failed. Install 'App Installer' from the Microsoft Store manually and re-run." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "winget installed successfully." -ForegroundColor Green
+}
+Write-Host "winget $(winget --version) detected." -ForegroundColor Gray
+Write-Host "Checking for winget update..." -NoNewline
+winget upgrade --id Microsoft.AppInstaller --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host " updated to $(winget --version)" -ForegroundColor Green
+} else {
+    Write-Host " already up to date" -ForegroundColor Gray
+}
+Write-Host "Installing $($apps.Count) apps...`n" -ForegroundColor Gray
 
 $installed  = @()
 $alreadyHad = @()
