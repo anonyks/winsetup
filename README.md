@@ -15,11 +15,13 @@ One-shot PowerShell setup for a fresh Windows install.
 
 ## Run it
 
-Open PowerShell as Administrator and paste:
+Open PowerShell and paste:
 
 ```powershell
 irm https://raw.githubusercontent.com/anonyks/winsetup/main/setup.ps1 | iex
 ```
+
+Accept the Administrator prompt when it appears.
 
 A log is saved on your Desktop as `setup-log.txt`.
 

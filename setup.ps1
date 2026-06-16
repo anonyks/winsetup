@@ -1,6 +1,29 @@
 # Windows VM Post-Install Setup
 # Usage: irm https://raw.githubusercontent.com/anonyks/winsetup/main/setup.ps1 | iex
 
+$SetupUrl = "https://raw.githubusercontent.com/anonyks/winsetup/main/setup.ps1"
+
+function Test-IsAdmin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-IsAdmin)) {
+    Write-Host "Restarting setup as Administrator..." -ForegroundColor Yellow
+
+    if ($PSCommandPath) {
+        $scriptPath = $PSCommandPath -replace "'", "''"
+        $command = "& '$scriptPath'"
+    } else {
+        $command = "irm $SetupUrl | iex"
+    }
+
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedCommand) -Verb RunAs
+    exit
+}
+
 $LogFile = "$env:USERPROFILE\Desktop\setup-log.txt"
 
 function Log {
