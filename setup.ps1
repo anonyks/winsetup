@@ -22,6 +22,41 @@ function SetReg {
     }
 }
 
+function Install-WinGet {
+    Log "winget not found. Installing..." "Yellow"
+
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        Log "  installing NuGet provider" "Gray"
+        Install-PackageProvider -Name NuGet -Force -ErrorAction Stop | Out-Null
+
+        Log "  trusting PSGallery" "Gray"
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+
+        Log "  installing Microsoft.WinGet.Client module" "Gray"
+        Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop | Out-Null
+        Import-Module Microsoft.WinGet.Client -Force -ErrorAction Stop
+
+        Log "  repairing/registering winget" "Gray"
+        Repair-WinGetPackageManager -AllUsers -ErrorAction Stop | Out-Null
+    } catch {
+        Log "  PowerShell bootstrap failed: $($_.Exception.Message)" "Yellow"
+        Log "  trying direct App Installer package" "Gray"
+
+        $installer = "$env:TEMP\AppInstaller.msixbundle"
+        Invoke-WebRequest -Uri "https://aka.ms/getwinget" -OutFile $installer -UseBasicParsing -ErrorAction Stop
+        Add-AppxPackage -Path $installer -ErrorAction Stop
+    }
+
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Log "ERROR: winget install failed. Restart PowerShell or install App Installer manually, then re-run." "Red"
+        exit 1
+    }
+
+    Log "winget installed successfully." "Green"
+}
+
 "=== Setup Log - $(Get-Date) ===" | Set-Content $LogFile
 
 $apps = @(
@@ -41,15 +76,7 @@ $apps = @(
 Log "`n=== Windows Setup ===" "Cyan"
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Log "winget not found. Installing..." "Yellow"
-    $installer = "$env:TEMP\AppInstaller.msixbundle"
-    Invoke-WebRequest -Uri "https://aka.ms/getwinget" -OutFile $installer -UseBasicParsing
-    Add-AppxPackage -Path $installer
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Log "ERROR: winget install failed. Install 'App Installer' from the Microsoft Store manually and re-run." "Red"
-        exit 1
-    }
-    Log "winget installed successfully." "Green"
+    Install-WinGet
 }
 Log "winget $(winget --version) detected." "Gray"
 Write-Host "Checking for winget update..." -NoNewline
