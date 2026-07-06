@@ -473,8 +473,8 @@ $null = SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" 
 $null = SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
 # Remove all shortcuts from desktop
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
-$shortcuts = Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue
-if ($shortcuts -and $shortcuts.Count -gt 0) {
+$shortcuts = @(Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue)
+if ($shortcuts.Count -gt 0) {
     $shortcuts | Remove-Item -Force -ErrorAction SilentlyContinue
     Log "  removed $($shortcuts.Count) desktop shortcut(s)" "Green"
 } else {
