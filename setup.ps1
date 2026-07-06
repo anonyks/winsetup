@@ -99,6 +99,8 @@ function Find-TaskbarPinsPath {
     if (Test-Path $taskbarPath) { return $taskbarPath }
     return $null
 }
+
+function Find-AppPath {
     param([string]$appName, [string]$searchPattern, [string[]]$commonPaths)
     
     try {
