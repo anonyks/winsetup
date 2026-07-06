@@ -594,7 +594,7 @@ foreach ($app in $launch) {
 # Wait a moment for apps to create shortcuts, then remove all desktop shortcuts
 Start-Sleep -Seconds 5
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
-$shortcuts = @(Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue)
+$shortcuts = @(Get-ChildItem $desktopPath -Filter "*.lnk" -ErrorAction SilentlyContinue) + @(Get-ChildItem $desktopPath -Filter "*.url" -ErrorAction SilentlyContinue)
 if ($shortcuts.Count -gt 0) {
     $shortcuts | Remove-Item -Force -ErrorAction SilentlyContinue
     Log "`n  cleaned up desktop: removed $($shortcuts.Count) shortcut(s)" "Green"
@@ -605,7 +605,7 @@ if ($shortcuts.Count -gt 0) {
 # Remove all extra taskbar pins (keep only Brave and File Explorer)
 $taskbarPath = Find-TaskbarPinsPath
 if ($taskbarPath -and (Test-Path $taskbarPath)) {
-    $taskbarPins = @(Get-ChildItem $taskbarPath -Include "*.lnk" -ErrorAction SilentlyContinue)
+    $taskbarPins = @(Get-ChildItem $taskbarPath -Filter "*.lnk" -ErrorAction SilentlyContinue)
     foreach ($pin in $taskbarPins) {
         $pinName = $pin.BaseName.ToLower()
         if ($pinName -notmatch "(brave|file explorer|explorer)") {
