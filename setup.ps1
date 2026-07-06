@@ -164,14 +164,33 @@ function Install-WinGet {
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-        Log "  installing NuGet provider" "Gray"
-        Install-PackageProvider -Name NuGet -Force -ErrorAction Stop | Out-Null
+        # Check and install NuGet if needed
+        $nugetCheck = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+        if (-not $nugetCheck) {
+            Log "  installing NuGet provider" "Gray"
+            Install-PackageProvider -Name NuGet -Force -ErrorAction Stop | Out-Null
+        } else {
+            Log "  NuGet provider already installed" "Gray"
+        }
 
-        Log "  trusting PSGallery" "Gray"
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+        # Check and trust PSGallery if needed
+        $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+        if ($psGallery.InstallationPolicy -ne "Trusted") {
+            Log "  trusting PSGallery" "Gray"
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+        } else {
+            Log "  PSGallery already trusted" "Gray"
+        }
 
-        Log "  installing Microsoft.WinGet.Client module" "Gray"
-        Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop | Out-Null
+        # Check and install Microsoft.WinGet.Client module if needed
+        $moduleCheck = Get-Module -Name Microsoft.WinGet.Client -ListAvailable -ErrorAction SilentlyContinue
+        if (-not $moduleCheck) {
+            Log "  installing Microsoft.WinGet.Client module" "Gray"
+            Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop | Out-Null
+        } else {
+            Log "  Microsoft.WinGet.Client module already installed" "Gray"
+        }
+        
         Import-Module Microsoft.WinGet.Client -Force -ErrorAction Stop
 
         Log "  attempting WinGet package manager repair" "Gray"
