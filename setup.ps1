@@ -148,9 +148,7 @@ function Find-AppPath {
 }
 
 function Find-PythonExe {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) { return $pythonCmd.Source }
-    
+    # Check common paths first (real installations)
     $commonPaths = @(
         "$env:LOCALAPPDATA\Programs\Python",
         "$env:ProgramFiles\Python*",
@@ -164,6 +162,10 @@ function Find-PythonExe {
             if ($found) { return $found }
         }
     }
+    
+    # Last resort: check PATH (may be WindowsApps link, but better than nothing)
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) { return $pythonCmd.Source }
     
     return Find-AppPath "Python" "python.exe" $commonPaths
 }
@@ -381,8 +383,8 @@ foreach ($name in $startupNames) {
 }
 
 $edgePolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
-SetReg $edgePolicyPath "StartupBoostEnabled"   0 "DWord" "Edge startup boost"
-SetReg $edgePolicyPath "BackgroundModeEnabled" 0 "DWord" "Edge background mode"
+$null = SetReg $edgePolicyPath "StartupBoostEnabled"   0 "DWord" "Edge startup boost"
+$null = SetReg $edgePolicyPath "BackgroundModeEnabled" 0 "DWord" "Edge background mode"
 
 # Disable Edge autorun via registry
 try {
@@ -457,18 +459,18 @@ if ($bravePath) {
 }
 
 # Show file extensions
-if (SetReg $explorerKey "HideFileExt" 0 "DWord" "show file extensions") { $explorerRestartNeeded = $true }
+$null = SetReg $explorerKey "HideFileExt" 0 "DWord" "show file extensions"; if ($?) { $explorerRestartNeeded = $true }
 
 # Collapse/hide File Explorer ribbon
-if (SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Ribbon" "Minimized" 1 "DWord" "collapse File Explorer ribbon") { $explorerRestartNeeded = $true }
+$null = SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Ribbon" "Minimized" 1 "DWord" "collapse File Explorer ribbon"; if ($?) { $explorerRestartNeeded = $true }
 
 # Desktop icons - show only Recycle Bin
 $desktopIcons = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel"
-if (SetReg $desktopIcons "{645FF040-5081-101B-9F08-00AA002F954E}" 0 "DWord" "Recycle Bin on desktop (visible)") { $explorerRestartNeeded = $true }
-if (SetReg $desktopIcons "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWord" "This PC desktop icon (hidden)") { $explorerRestartNeeded = $true }
-if (SetReg $desktopIcons "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" 1 "DWord" "User folder desktop icon (hidden)") { $explorerRestartNeeded = $true }
-if (SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" "Network desktop icon (hidden)") { $explorerRestartNeeded = $true }
-if (SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)") { $explorerRestartNeeded = $true }
+$null = SetReg $desktopIcons "{645FF040-5081-101B-9F08-00AA002F954E}" 0 "DWord" "Recycle Bin on desktop (visible)"; if ($?) { $explorerRestartNeeded = $true }
+$null = SetReg $desktopIcons "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWord" "This PC desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
+$null = SetReg $desktopIcons "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" 1 "DWord" "User folder desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
+$null = SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" "Network desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
+$null = SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
 # Remove all shortcuts from desktop
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
 $shortcuts = Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue
@@ -528,13 +530,13 @@ try {
 
 # Disable Start menu ads & suggestions
 $cdm = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
-SetReg $cdm "SystemPaneSuggestionsEnabled"    0 "DWord" "Start menu suggestions"
-SetReg $cdm "SubscribedContent-338388Enabled" 0 "DWord" "Start menu tips"
-SetReg $cdm "SubscribedContent-338389Enabled" 0 "DWord" "Start menu highlights"
-SetReg $cdm "SubscribedContent-353698Enabled" 0 "DWord" "Timeline suggestions"
+$null = SetReg $cdm "SystemPaneSuggestionsEnabled"    0 "DWord" "Start menu suggestions"
+$null = SetReg $cdm "SubscribedContent-338388Enabled" 0 "DWord" "Start menu tips"
+$null = SetReg $cdm "SubscribedContent-338389Enabled" 0 "DWord" "Start menu highlights"
+$null = SetReg $cdm "SubscribedContent-353698Enabled" 0 "DWord" "Timeline suggestions"
 
 # Disable telemetry
-SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 0 "DWord" "telemetry"
+$null = SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 0 "DWord" "telemetry"
 
 # Dark theme
 $themePath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
@@ -557,7 +559,7 @@ if (Test-Path $feedsPath) {
 } else {
     Log "  News & Interests path not found (may not apply to this system)" "Gray"
 }
-SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "EnableFeeds" 0 "DWord" "Windows Feeds policy"
+$null = SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "EnableFeeds" 0 "DWord" "Windows Feeds policy"
 
 # Remove pinned taskbar shortcuts (Edge, Store, Mail)
 $taskbarPins = Find-TaskbarPinsPath
@@ -602,7 +604,7 @@ foreach ($app in $launch) {
         $appPath = & $app.pathFinder
         if ($appPath -and (Test-Path $appPath)) {
             try {
-                Start-Process $appPath -RedirectStandardOutput NUL -RedirectStandardError NUL -ErrorAction Stop
+                Start-Process $appPath -WindowStyle Hidden -ErrorAction Stop
                 Log "  launched: $($app.name)" "Green"
             } catch {
                 Log "  failed to launch: $($app.name) ($($_.Exception.Message))" "Yellow"
