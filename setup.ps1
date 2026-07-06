@@ -444,10 +444,15 @@ $bravePath = Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware
 
 if ($bravePath) {
     try {
-        $currentBrowser = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice" -ErrorAction SilentlyContinue).ProgId
-        if ($currentBrowser -notlike "*Brave*") {
-            Start-Process $bravePath "--make-default-browser" -Wait -ErrorAction SilentlyContinue
-            Log "  set default browser: Brave" "Green"
+        $currentBrowser = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http" -ErrorAction SilentlyContinue).ProgId
+        if ($currentBrowser -notlike "BraveSSC*") {
+            # Set via registry (command line flag doesn't work on Windows 10/11)
+            @("http", "https", "ftp") | ForEach-Object {
+                $regPath = "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\$_"
+                $null = New-Item -Path $regPath -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -Path $regPath -Name "ProgId" -Value "BraveSSC.$_" -ErrorAction SilentlyContinue
+            }
+            Log "  set default browser: Brave (registry)" "Green"
         } else {
             Log "  default browser already Brave, skipping" "Gray"
         }
