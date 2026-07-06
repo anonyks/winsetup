@@ -444,12 +444,11 @@ $bravePath = Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware
 
 if ($bravePath) {
     try {
-        # Set Brave as default for http and https (only protocols that matter for browser)
-        @("http", "https") | ForEach-Object {
-            $regPath = "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\$_"
-            $null = New-Item -Path $regPath -Force -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path $regPath -Name "ProgId" -Value "BraveSSC.$_" -Force -ErrorAction Stop
-        }
+        # Use assoc and ftype commands (more reliable than registry on Windows 10/11)
+        $braveDir = Split-Path $bravePath
+        cmd /c "assoc .html=BraveSSC" 2>&1 | Out-Null
+        cmd /c "assoc .htm=BraveSSC" 2>&1 | Out-Null
+        cmd /c "ftype BraveSSC=`"$bravePath`" %%1" 2>&1 | Out-Null
         Log "  set default browser: Brave" "Green"
     } catch {
         Log "  default browser set failed: $($_.Exception.Message)" "Yellow"
