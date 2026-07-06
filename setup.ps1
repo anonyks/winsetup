@@ -103,36 +103,6 @@ function Find-TaskbarPinsPath {
     return $null
 }
 
-function Pin-ToTaskbar {
-    param([string]$appPath)
-    try {
-        if (-not (Test-Path $appPath)) { return $false }
-        
-        $taskbarPath = Find-TaskbarPinsPath
-        if (-not $taskbarPath) { return $false }
-        
-        # Create a shortcut in the taskbar pins folder
-        $appName = [System.IO.Path]::GetFileNameWithoutExtension($appPath)
-        $shortcutPath = Join-Path $taskbarPath "$appName.lnk"
-        
-        if (Test-Path $shortcutPath) { return $true }
-        
-        # Use WScript.Shell to create shortcut
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $appPath
-        $shortcut.Save()
-        
-        # Force taskbar refresh
-        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
-        Start-Sleep -Milliseconds 500
-        
-        return $true
-    } catch {
-        return $false
-    }
-}
-
 function Find-AppPath {
     param([string]$appName, [string]$searchPattern, [string[]]$commonPaths)
     
@@ -619,6 +589,21 @@ if ($explorerRestartNeeded) {
 # -------------------------------------------------------
 Log "`n=== All done! Log saved to: $LogFile ===" "Cyan"
 
+# Clean taskbar pins - keep only Brave and File Explorer
+$taskbarPath = Find-TaskbarPinsPath
+if ($taskbarPath -and (Test-Path $taskbarPath)) {
+    $taskbarPins = @(Get-ChildItem $taskbarPath -Include "*.lnk" -ErrorAction SilentlyContinue)
+    $keepPins = @("brave", "explorer")
+    
+    foreach ($pin in $taskbarPins) {
+        $pinName = $pin.BaseName.ToLower()
+        if ($keepPins -notcontains $pinName) {
+            Remove-Item $pin.FullName -Force -ErrorAction SilentlyContinue
+            Log "  removed from taskbar: $($pin.BaseName)" "Gray"
+        }
+    }
+}
+
 # Launch apps
 Log "`n=== Launching apps ===" "Cyan"
 
@@ -637,11 +622,6 @@ foreach ($app in $launch) {
             try {
                 Start-Process $appPath -WindowStyle Hidden -ErrorAction Stop
                 Log "  launched: $($app.name)" "Green"
-                
-                # Pin to taskbar
-                if (Pin-ToTaskbar $appPath) {
-                    Log "  pinned to taskbar: $($app.name)" "Gray"
-                }
             } catch {
                 Log "  failed to launch: $($app.name) ($($_.Exception.Message))" "Yellow"
             }
