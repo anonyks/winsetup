@@ -551,7 +551,12 @@ if (SetReg $explorerKey "ShowCopilotButton"   0 "DWord" "taskbar Copilot button"
 if (SetReg $explorerKey "ShowTaskViewButton"  0 "DWord" "taskbar Task View button") { $explorerRestartNeeded = $true }
 
 # Hide News/Interests/Feeds
-if (SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Feeds" "ShellFeedsTaskbarViewMode" 2 "DWord" "News & Interests feed") { $explorerRestartNeeded = $true }
+$feedsPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Feeds"
+if (Test-Path $feedsPath) {
+    if (SetReg $feedsPath "ShellFeedsTaskbarViewMode" 2 "DWord" "News & Interests feed") { $explorerRestartNeeded = $true }
+} else {
+    Log "  News & Interests path not found (may not apply to this system)" "Gray"
+}
 SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "EnableFeeds" 0 "DWord" "Windows Feeds policy"
 
 # Remove pinned taskbar shortcuts (Edge, Store, Mail)
