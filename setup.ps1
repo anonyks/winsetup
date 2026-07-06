@@ -444,20 +444,15 @@ $bravePath = Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware
 
 if ($bravePath) {
     try {
-        $currentBrowser = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http" -ErrorAction SilentlyContinue).ProgId
-        if ($currentBrowser -notlike "BraveSSC*") {
-            # Set via registry (command line flag doesn't work on Windows 10/11)
-            @("http", "https", "ftp") | ForEach-Object {
-                $regPath = "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\$_"
-                $null = New-Item -Path $regPath -Force -ErrorAction SilentlyContinue
-                Set-ItemProperty -Path $regPath -Name "ProgId" -Value "BraveSSC.$_" -ErrorAction SilentlyContinue
-            }
-            Log "  set default browser: Brave (registry)" "Green"
-        } else {
-            Log "  default browser already Brave, skipping" "Gray"
+        # Create registry paths for Brave associations
+        @("http", "https", "ftp") | ForEach-Object {
+            $regPath = "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\$_"
+            $null = New-Item -Path $regPath -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $regPath -Name "ProgId" -Value "BraveSSC.$_" -Force -ErrorAction Stop
         }
+        Log "  set default browser: Brave" "Green"
     } catch {
-        Log "  default browser set failed (may require manual config)" "Yellow"
+        Log "  default browser set failed: $($_.Exception.Message)" "Yellow"
     }
 } else {
     Log "  Brave not found, skipping default browser (install first)" "Yellow"
@@ -587,30 +582,14 @@ if ($explorerRestartNeeded) {
 # -------------------------------------------------------
 Log "`n=== All done! Log saved to: $LogFile ===" "Cyan"
 
-# Clean taskbar pins - keep only Brave and File Explorer
-$taskbarPath = Find-TaskbarPinsPath
-if ($taskbarPath -and (Test-Path $taskbarPath)) {
-    $taskbarPins = @(Get-ChildItem $taskbarPath -Include "*.lnk" -ErrorAction SilentlyContinue)
-    
-    foreach ($pin in $taskbarPins) {
-        $pinName = $pin.BaseName.ToLower()
-        # Keep Brave or File Explorer
-        if ($pinName -notmatch "(brave|file explorer|explorer)" ) {
-            Remove-Item $pin.FullName -Force -ErrorAction SilentlyContinue
-            Log "  removed from taskbar: $($pin.BaseName)" "Gray"
-        }
-    }
-}
-
 # Launch apps
 Log "`n=== Launching apps ===" "Cyan"
 
 $launch = @(
     @{ name = "Brave";        pathFinder = { Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware") } },
-    @{ name = "VS Code";      pathFinder = { Find-AppPath "Visual Studio Code" "code.exe" @("$env:LOCALAPPDATA\Programs\Microsoft VS Code", "$env:ProgramFiles\Microsoft VS Code") } },
     @{ name = "Telegram";     pathFinder = { Find-AppPath "Telegram" "Telegram.exe" @("$env:APPDATA\Telegram Desktop", "$env:ProgramFiles\Telegram Desktop") } },
-    @{ name = "Google Drive"; pathFinder = { Find-AppPath "Google Drive" "GoogleDriveFS.exe" @("$env:ProgramFiles\Google\Drive File Stream", "$env:ProgramFiles (x86)\Google\Drive File Stream") } },
-    @{ name = "Notepad++";    pathFinder = { Find-AppPath "Notepad++" "notepad++.exe" @("$env:ProgramFiles\Notepad++", "$env:ProgramFiles (x86)\Notepad++") } }
+    @{ name = "VS Code";      pathFinder = { Find-AppPath "Visual Studio Code" "code.exe" @("$env:LOCALAPPDATA\Programs\Microsoft VS Code", "$env:ProgramFiles\Microsoft VS Code") } },
+    @{ name = "Google Drive"; pathFinder = { Find-AppPath "Google Drive" "GoogleDriveFS.exe" @("$env:ProgramFiles\Google\Drive File Stream", "$env:ProgramFiles (x86)\Google\Drive File Stream") } }
 )
 
 foreach ($app in $launch) {
@@ -632,7 +611,7 @@ foreach ($app in $launch) {
 }
 
 # Wait a moment for apps to create shortcuts, then remove all desktop shortcuts
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 5
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
 $shortcuts = @(Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue)
 if ($shortcuts.Count -gt 0) {
@@ -640,4 +619,17 @@ if ($shortcuts.Count -gt 0) {
     Log "`n  cleaned up desktop: removed $($shortcuts.Count) shortcut(s)" "Green"
 } else {
     Log "`n  desktop is clean (no shortcuts)" "Gray"
+}
+
+# Remove all extra taskbar pins (keep only Brave and File Explorer)
+$taskbarPath = Find-TaskbarPinsPath
+if ($taskbarPath -and (Test-Path $taskbarPath)) {
+    $taskbarPins = @(Get-ChildItem $taskbarPath -Include "*.lnk" -ErrorAction SilentlyContinue)
+    foreach ($pin in $taskbarPins) {
+        $pinName = $pin.BaseName.ToLower()
+        if ($pinName -notmatch "(brave|file explorer|explorer)") {
+            Remove-Item $pin.FullName -Force -ErrorAction SilentlyContinue
+            Log "  unpinned from taskbar: $($pin.BaseName)" "Gray"
+        }
+    }
 }
