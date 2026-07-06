@@ -135,6 +135,13 @@ function Find-AppPath {
                 }
             } catch {}
         }
+        
+        # Try Windows PATH
+        $pathVar = $env:PATH -split ";"
+        foreach ($pathItem in $pathVar) {
+            $fullPath = Join-Path $pathItem $searchPattern
+            if (Test-Path $fullPath) { return $fullPath }
+        }
     } catch {}
     
     return $null
@@ -544,6 +551,8 @@ if ($explorerRestartNeeded) {
         Stop-Process -Name explorer -Force -ErrorAction Stop
         Start-Sleep -Seconds 2
         Start-Process explorer -ErrorAction Stop
+        Start-Sleep -Seconds 3
+        Log "  Explorer restarted and stabilized" "Green"
     } catch {
         Log "  Explorer restart failed (changes may apply on next login)" "Yellow"
     }
@@ -565,15 +574,19 @@ $launch = @(
 )
 
 foreach ($app in $launch) {
-    $appPath = & $app.pathFinder
-    if ($appPath -and (Test-Path $appPath)) {
-        try {
-            Start-Process $appPath -RedirectStandardOutput NUL -RedirectStandardError NUL -ErrorAction Stop
-            Log "  launched: $($app.name)" "Green"
-        } catch {
-            Log "  failed to launch: $($app.name)" "Yellow"
+    try {
+        $appPath = & $app.pathFinder
+        if ($appPath -and (Test-Path $appPath)) {
+            try {
+                Start-Process $appPath -RedirectStandardOutput NUL -RedirectStandardError NUL -ErrorAction Stop
+                Log "  launched: $($app.name)" "Green"
+            } catch {
+                Log "  failed to launch: $($app.name) ($($_.Exception.Message))" "Yellow"
+            }
+        } else {
+            Log "  not found, skipping: $($app.name)" "Yellow"
         }
-    } else {
-        Log "  not found, skipping: $($app.name)" "Yellow"
+    } catch {
+        Log "  error finding path for $($app.name): $($_.Exception.Message)" "Yellow"
     }
 }
