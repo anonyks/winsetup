@@ -242,6 +242,7 @@ function Install-WinGet {
     }
 
     Log "winget installed successfully." "Green"
+}
 
 "=== Setup Log - $(Get-Date) ===" | Set-Content $LogFile
 
