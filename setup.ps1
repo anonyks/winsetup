@@ -593,11 +593,11 @@ Log "`n=== All done! Log saved to: $LogFile ===" "Cyan"
 $taskbarPath = Find-TaskbarPinsPath
 if ($taskbarPath -and (Test-Path $taskbarPath)) {
     $taskbarPins = @(Get-ChildItem $taskbarPath -Include "*.lnk" -ErrorAction SilentlyContinue)
-    $keepPins = @("brave", "explorer")
     
     foreach ($pin in $taskbarPins) {
         $pinName = $pin.BaseName.ToLower()
-        if ($keepPins -notcontains $pinName) {
+        # Keep Brave or File Explorer
+        if ($pinName -notmatch "(brave|file explorer|explorer)" ) {
             Remove-Item $pin.FullName -Force -ErrorAction SilentlyContinue
             Log "  removed from taskbar: $($pin.BaseName)" "Gray"
         }
