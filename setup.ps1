@@ -477,14 +477,7 @@ $null = SetReg $desktopIcons "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" 1 "DWord" 
 $null = SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" "Network desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
 $null = SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
 # Remove all shortcuts from desktop
-$desktopPath = [System.Environment]::GetFolderPath("Desktop")
-$shortcuts = @(Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue)
-if ($shortcuts.Count -gt 0) {
-    $shortcuts | Remove-Item -Force -ErrorAction SilentlyContinue
-    Log "  removed $($shortcuts.Count) desktop shortcut(s)" "Green"
-} else {
-    Log "  no desktop shortcuts to remove" "Gray"
-}
+$null = SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
 
 # Unpin all Start menu groups/pins
 $winBuild = [System.Environment]::OSVersion.Version.Build
@@ -636,4 +629,15 @@ foreach ($app in $launch) {
     } catch {
         Log "  error finding path for $($app.name): $($_.Exception.Message)" "Yellow"
     }
+}
+
+# Wait a moment for apps to create shortcuts, then remove all desktop shortcuts
+Start-Sleep -Seconds 3
+$desktopPath = [System.Environment]::GetFolderPath("Desktop")
+$shortcuts = @(Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue)
+if ($shortcuts.Count -gt 0) {
+    $shortcuts | Remove-Item -Force -ErrorAction SilentlyContinue
+    Log "`n  cleaned up desktop: removed $($shortcuts.Count) shortcut(s)" "Green"
+} else {
+    Log "`n  desktop is clean (no shortcuts)" "Gray"
 }
