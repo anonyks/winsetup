@@ -198,7 +198,7 @@ function Install-WinGet {
 $apps = @(
     @{ id = "Brave.Brave";                    name = "Brave Browser" },
     @{ id = "Telegram.TelegramDesktop";       name = "Telegram" },
-    @{ id = "Emurasoft.EmEditor";             name = "EmEditor" },
+    @{ id = "Emurasoft.EmEditor";             name = "EmEditor"; version = "25.0.0" },
     @{ id = "Python.Python.3.10";             name = "Python 3.10" },
     @{ id = "Google.GoogleDrive";             name = "Google Drive" },
     @{ id = "RARLab.WinRAR";                  name = "WinRAR" },
@@ -236,7 +236,8 @@ foreach ($app in $apps) {
     $n = [array]::IndexOf($apps, $app) + 1
     Log "[$n/$($apps.Count)] $($app.name)" "Cyan"
 
-    $out  = winget install --id $app.id -e --silent --accept-package-agreements --accept-source-agreements 2>&1
+    $versionArg = if ($app.version) { @("-v", $app.version) } else { @() }
+    $out  = winget install --id $app.id -e --silent @versionArg --accept-package-agreements --accept-source-agreements 2>&1
     $code = $LASTEXITCODE
     $out | ForEach-Object { Add-Content -Path $LogFile -Value "    $_" }
 
