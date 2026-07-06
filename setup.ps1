@@ -370,7 +370,7 @@ if ($pythonExe -and (Test-Path $pythonExe)) {
 Log "`n=== Disabling startup apps ===" "Cyan"
 
 $runKey       = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-$startupNames = @("OneDrive", "PhoneLink", "Microsoft Teams", "com.squirrel.Teams.Teams")
+$startupNames = @("OneDrive", "PhoneLink", "Microsoft Teams", "com.squirrel.Teams.Teams", "msedge", "Microsoft Edge")
 
 foreach ($name in $startupNames) {
     $val = (Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue).$name
@@ -383,6 +383,25 @@ foreach ($name in $startupNames) {
 $edgePolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
 SetReg $edgePolicyPath "StartupBoostEnabled"   0 "DWord" "Edge startup boost"
 SetReg $edgePolicyPath "BackgroundModeEnabled" 0 "DWord" "Edge background mode"
+
+# Disable Edge autorun via registry
+try {
+    $edgeAutorun = @(
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    )
+    foreach ($regPath in $edgeAutorun) {
+        foreach ($edgeKey in @("msedge", "Microsoft Edge")) {
+            try {
+                $val = (Get-ItemProperty -Path $regPath -Name $edgeKey -ErrorAction SilentlyContinue).$edgeKey
+                if ($val) {
+                    Remove-ItemProperty -Path $regPath -Name $edgeKey -ErrorAction SilentlyContinue
+                    Log "  disabled Edge autorun from: $regPath" "Green"
+                }
+            } catch {}
+        }
+    }
+} catch {}
 
 $copilotPath = "HKCU:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot"
 SetReg $copilotPath "TurnOffWindowsCopilot" 1 "DWord" "Windows Copilot (policy)"
