@@ -103,6 +103,36 @@ function Find-TaskbarPinsPath {
     return $null
 }
 
+function Pin-ToTaskbar {
+    param([string]$appPath)
+    try {
+        if (-not (Test-Path $appPath)) { return $false }
+        
+        $taskbarPath = Find-TaskbarPinsPath
+        if (-not $taskbarPath) { return $false }
+        
+        # Create a shortcut in the taskbar pins folder
+        $appName = [System.IO.Path]::GetFileNameWithoutExtension($appPath)
+        $shortcutPath = Join-Path $taskbarPath "$appName.lnk"
+        
+        if (Test-Path $shortcutPath) { return $true }
+        
+        # Use WScript.Shell to create shortcut
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $appPath
+        $shortcut.Save()
+        
+        # Force taskbar refresh
+        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+        Start-Sleep -Milliseconds 500
+        
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Find-AppPath {
     param([string]$appName, [string]$searchPattern, [string[]]$commonPaths)
     
@@ -596,7 +626,8 @@ $launch = @(
     @{ name = "Brave";        pathFinder = { Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware") } },
     @{ name = "VS Code";      pathFinder = { Find-AppPath "Visual Studio Code" "code.exe" @("$env:LOCALAPPDATA\Programs\Microsoft VS Code", "$env:ProgramFiles\Microsoft VS Code") } },
     @{ name = "Telegram";     pathFinder = { Find-AppPath "Telegram" "Telegram.exe" @("$env:APPDATA\Telegram Desktop", "$env:ProgramFiles\Telegram Desktop") } },
-    @{ name = "Google Drive"; pathFinder = { Find-AppPath "Google Drive" "GoogleDriveFS.exe" @("$env:ProgramFiles\Google\Drive File Stream", "$env:ProgramFiles (x86)\Google\Drive File Stream") } }
+    @{ name = "Google Drive"; pathFinder = { Find-AppPath "Google Drive" "GoogleDriveFS.exe" @("$env:ProgramFiles\Google\Drive File Stream", "$env:ProgramFiles (x86)\Google\Drive File Stream") } },
+    @{ name = "Notepad++";    pathFinder = { Find-AppPath "Notepad++" "notepad++.exe" @("$env:ProgramFiles\Notepad++", "$env:ProgramFiles (x86)\Notepad++") } }
 )
 
 foreach ($app in $launch) {
@@ -606,6 +637,11 @@ foreach ($app in $launch) {
             try {
                 Start-Process $appPath -WindowStyle Hidden -ErrorAction Stop
                 Log "  launched: $($app.name)" "Green"
+                
+                # Pin to taskbar
+                if (Pin-ToTaskbar $appPath) {
+                    Log "  pinned to taskbar: $($app.name)" "Gray"
+                }
             } catch {
                 Log "  failed to launch: $($app.name) ($($_.Exception.Message))" "Yellow"
             }
