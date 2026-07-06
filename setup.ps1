@@ -24,6 +24,18 @@ if (-not (Test-IsAdmin)) {
     exit
 }
 
+$osVersion = [System.Environment]::OSVersion.Version
+$buildNumber = $osVersion.Build
+
+# Windows 11 = build 22000+, Windows 10 = build 10000-21999
+# winget requires Windows 10 build 19041 or later
+if ($buildNumber -lt 19041) {
+    Write-Host "ERROR: This script requires Windows 10 build 19041 or later (or Windows 11)" -ForegroundColor Red
+    Write-Host "Your system: Windows build $buildNumber" -ForegroundColor Red
+    Write-Host "Please upgrade Windows and try again." -ForegroundColor Red
+    exit 1
+}
+
 $LogFile = "$env:USERPROFILE\Desktop\setup-log.txt"
 
 function Log {
@@ -35,14 +47,113 @@ function Log {
 
 function SetReg {
     param([string]$path, [string]$name, $value, [string]$type = "DWord", [string]$label)
-    if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
-    $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
-    if ($null -ne $current -and $current -eq $value) {
-        Log "  already set: $label" "Gray"
-    } else {
-        Set-ItemProperty -Path $path -Name $name -Value $value -Type $type -Force -ErrorAction SilentlyContinue
-        Log "  applied: $label" "Green"
+    try {
+        if (-not (Test-Path $path)) { New-Item -Path $path -Force -ErrorAction Stop | Out-Null }
+        $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
+        if ($null -ne $current -and $current -eq $value) {
+            Log "  already set: $label" "Gray"
+        } else {
+            Set-ItemProperty -Path $path -Name $name -Value $value -Type $type -Force -ErrorAction Stop | Out-Null
+            Log "  applied: $label" "Green"
+        }
+    } catch {
+        Log "  FAILED to set $label (access denied or path unavailable)" "Yellow"
     }
+}
+
+function Kill-ProcessSafe {
+    param([string]$processName, [int]$maxRetries = 3)
+    $retries = 0
+    while ($retries -lt $maxRetries) {
+        try {
+            $procs = Get-Process -Name $processName -ErrorAction SilentlyContinue
+            if ($procs) {
+                $procs | Stop-Process -Force -ErrorAction Stop
+                return $true
+            }
+            return $false
+        } catch {
+            $retries++
+            if ($retries -lt $maxRetries) {
+                Start-Sleep -Milliseconds 500
+            }
+        }
+    }
+    return $false
+}
+
+function Find-StartMenuConfigPath {
+    $packagesPath = "$env:LOCALAPPDATA\Packages"
+    if (Test-Path $packagesPath) {
+        $startMenuPkg = Get-ChildItem $packagesPath -Filter "*StartMenuExperience*" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($startMenuPkg) {
+            $configPath = Join-Path $startMenuPkg.FullName "LocalState\start2.bin"
+            if (Test-Path $configPath) { return $configPath }
+        }
+    }
+    return $null
+}
+
+function Find-TaskbarPinsPath {
+    $taskbarPath = "$env:APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
+    if (Test-Path $taskbarPath) { return $taskbarPath }
+    return $null
+}
+    param([string]$appName, [string]$searchPattern, [string[]]$commonPaths)
+    
+    try {
+        # Try to find in common paths
+        foreach ($path in $commonPaths) {
+            if (Test-Path $path) {
+                $found = Get-ChildItem $path -Include $searchPattern -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+                if ($found) { return $found }
+            }
+        }
+        
+        # Try Registry (Program Files uninstall entries)
+        $regPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+        )
+        foreach ($regPath in $regPaths) {
+            try {
+                $apps = Get-ChildItem $regPath -ErrorAction SilentlyContinue
+                foreach ($app in $apps) {
+                    $displayName = $app.GetValue("DisplayName")
+                    if ($displayName -like "*$appName*") {
+                        $location = $app.GetValue("InstallLocation")
+                        if ($location) {
+                            $found = Get-ChildItem "$location" -Include $searchPattern -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+                            if ($found) { return $found }
+                        }
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
+    
+    return $null
+}
+
+function Find-PythonExe {
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) { return $pythonCmd.Source }
+    
+    $commonPaths = @(
+        "$env:LOCALAPPDATA\Programs\Python",
+        "$env:ProgramFiles\Python*",
+        "$env:ProgramFiles (x86)\Python*",
+        "C:\Python*"
+    )
+    
+    foreach ($path in $commonPaths) {
+        if ($path -like "*\*") {
+            $found = Get-Item $path -ErrorAction SilentlyContinue | Get-ChildItem -Include "python.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+            if ($found) { return $found }
+        }
+    }
+    
+    return Find-AppPath "Python" "python.exe" $commonPaths
 }
 
 function Install-WinGet {
@@ -153,11 +264,9 @@ if ($failed.Count -gt 0) {
 # -------------------------------------------------------
 Log "`n=== Setting Python environment variables ===" "Cyan"
 
-$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-$pythonExe = if ($pythonCmd) { $pythonCmd.Source } else { $null }
-if (-not $pythonExe) { $pythonExe = "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe" }
+$pythonExe = Find-PythonExe
 
-if (Test-Path $pythonExe) {
+if ($pythonExe -and (Test-Path $pythonExe)) {
     $pythonDir     = Split-Path $pythonExe
     $pythonScripts = Join-Path $pythonDir "Scripts"
     [System.Environment]::SetEnvironmentVariable("PYTHON_HOME", $pythonDir, "User")
@@ -195,18 +304,26 @@ SetReg $edgePolicyPath "BackgroundModeEnabled" 0 "DWord" "Edge background mode"
 $copilotPath = "HKCU:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot"
 SetReg $copilotPath "TurnOffWindowsCopilot" 1 "DWord" "Windows Copilot (policy)"
 
-Get-ScheduledTask -TaskName "*OneDrive*" -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
-Log "  disabled: OneDrive scheduled tasks" "Green"
+try {
+    $oneDriveTasks = Get-ScheduledTask -TaskName "*OneDrive*" -ErrorAction SilentlyContinue
+    if ($oneDriveTasks) {
+        $oneDriveTasks | Disable-ScheduledTask -ErrorAction Stop | Out-Null
+        Log "  disabled: OneDrive scheduled tasks" "Green"
+    }
+} catch {
+    Log "  OneDrive tasks disable failed (may need admin or may already be disabled)" "Yellow"
+}
 
 # Kill Edge, OneDrive, Copilot if running
 Log "`n=== Killing unwanted processes ===" "Cyan"
 @("msedge", "OneDrive", "Copilot") | ForEach-Object {
-    $procs = Get-Process -Name $_ -ErrorAction SilentlyContinue
-    if ($procs) {
-        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+    if (Kill-ProcessSafe $_) {
         Log "  killed: $_" "Green"
     } else {
-        Log "  not running: $_" "Gray"
+        $procs = Get-Process -Name $_ -ErrorAction SilentlyContinue
+        if (-not $procs) {
+            Log "  not running: $_" "Gray"
+        }
     }
 }
 
@@ -218,17 +335,22 @@ Log "`n=== Applying Windows tweaks ===" "Cyan"
 $explorerKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
 
 # Set Brave as default browser
-$bravePath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe"
-if (Test-Path $bravePath) {
-    $currentBrowser = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice" -ErrorAction SilentlyContinue).ProgId
-    if ($currentBrowser -notlike "*Brave*") {
-        Start-Process $bravePath "--make-default-browser" -Wait
-        Log "  set default browser: Brave" "Green"
-    } else {
-        Log "  default browser already Brave, skipping" "Gray"
+$bravePath = Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware", "$env:ProgramFiles (x86)\BraveSoftware")
+
+if ($bravePath) {
+    try {
+        $currentBrowser = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice" -ErrorAction SilentlyContinue).ProgId
+        if ($currentBrowser -notlike "*Brave*") {
+            Start-Process $bravePath "--make-default-browser" -Wait -ErrorAction SilentlyContinue
+            Log "  set default browser: Brave" "Green"
+        } else {
+            Log "  default browser already Brave, skipping" "Gray"
+        }
+    } catch {
+        Log "  default browser set failed (may require manual config)" "Yellow"
     }
 } else {
-    Log "  Brave not found, skipping default browser (may need a reboot first)" "Yellow"
+    Log "  Brave not found, skipping default browser (install first)" "Yellow"
 }
 
 # Show file extensions
@@ -254,16 +376,17 @@ if ($shortcuts) {
 
 # Unpin all Start menu groups/pins
 $winBuild = [System.Environment]::OSVersion.Version.Build
-if ($winBuild -ge 22000) {
-    # Windows 11 - delete start2.bin, Windows recreates it clean on next login
-    $start2 = "$env:LOCALAPPDATA\Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState\start2.bin"
-    if (Test-Path $start2) {
-        Remove-Item $start2 -Force
-        Log "  cleared Start menu pins (Win11 - takes effect after re-login)" "Green"
-    }
-} else {
-    # Windows 10 - import a blank start layout
-    $xml = @"
+try {
+    if ($winBuild -ge 22000) {
+        # Windows 11 - delete start2.bin, Windows recreates it clean on next login
+        $start2 = Find-StartMenuConfigPath
+        if ($start2) {
+            Remove-Item $start2 -Force -ErrorAction Stop
+            Log "  cleared Start menu pins (Win11 - takes effect after re-login)" "Green"
+        }
+    } else {
+        # Windows 10 - import a blank start layout
+        $xml = @"
 <LayoutModificationTemplate xmlns:defaultlayout="http://schemas.microsoft.com/Start/2014/FullDefaultLayout"
     xmlns:start="http://schemas.microsoft.com/Start/2014/StartLayout" Version="1"
     xmlns="http://schemas.microsoft.com/Start/2014/LayoutModification">
@@ -275,12 +398,15 @@ if ($winBuild -ge 22000) {
   </DefaultLayoutOverride>
 </LayoutModificationTemplate>
 "@
-    $xmlPath = "$env:TEMP\StartLayout.xml"
-    $xml | Set-Content $xmlPath -Encoding UTF8
-    Import-StartLayout -LayoutPath $xmlPath -MountPath "$env:SystemDrive\" -ErrorAction SilentlyContinue
-    Log "  cleared Start menu pins (Win10)" "Green"
+        $xmlPath = "$env:TEMP\StartLayout.xml"
+        $xml | Set-Content $xmlPath -Encoding UTF8 -ErrorAction Stop
+        Import-StartLayout -LayoutPath $xmlPath -MountPath "$env:SystemDrive\" -ErrorAction Stop
+        Log "  cleared Start menu pins (Win10)" "Green"
+    }
+    Log "  desktop: only Recycle Bin visible" "Green"
+} catch {
+    Log "  Start menu customization failed (may require reboot): $($_.Exception.Message)" "Yellow"
 }
-Log "  desktop: only Recycle Bin visible" "Green"
 
 # Disable Start menu ads & suggestions
 $cdm = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
@@ -311,17 +437,23 @@ SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Feeds" "ShellFeedsTaskba
 SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "EnableFeeds" 0 "DWord" "Windows Feeds policy"
 
 # Remove pinned taskbar shortcuts (Edge, Store, Mail)
-$taskbarPins = "$env:APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
-@("Microsoft Edge.lnk", "Microsoft Store.lnk", "Mail.lnk") | ForEach-Object {
-    $p = Join-Path $taskbarPins $_
-    if (Test-Path $p) { Remove-Item $p -Force; Log "  removed taskbar pin: $_" "Green" }
+$taskbarPins = Find-TaskbarPinsPath
+if ($taskbarPins) {
+    @("Microsoft Edge.lnk", "Microsoft Store.lnk", "Mail.lnk") | ForEach-Object {
+        $p = Join-Path $taskbarPins $_
+        if (Test-Path $p) { Remove-Item $p -Force; Log "  removed taskbar pin: $_" "Green" }
+    }
 }
 
 # Restart Explorer to apply taskbar/theme changes
 Log "  restarting Explorer to apply changes..." "Gray"
-Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
-Start-Process explorer
+try {
+    Stop-Process -Name explorer -Force -ErrorAction Stop
+    Start-Sleep -Seconds 2
+    Start-Process explorer -ErrorAction Stop
+} catch {
+    Log "  Explorer restart failed (changes may apply on next login)" "Yellow"
+}
 
 # -------------------------------------------------------
 Log "`n=== All done! Log saved to: $LogFile ===" "Cyan"
@@ -330,16 +462,21 @@ Log "`n=== All done! Log saved to: $LogFile ===" "Cyan"
 Log "`n=== Launching apps ===" "Cyan"
 
 $launch = @(
-    @{ name = "Brave";        path = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe" },
-    @{ name = "VS Code";      path = if (Test-Path "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe") { "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe" } else { "$env:ProgramFiles\Microsoft VS Code\Code.exe" } },
-    @{ name = "Telegram";     path = "$env:APPDATA\Telegram Desktop\Telegram.exe" },
-    @{ name = "Google Drive"; path = (Get-ChildItem "$env:ProgramFiles\Google\Drive File Stream\" -Filter "GoogleDriveFS.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName) }
+    @{ name = "Brave";        pathFinder = { Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware") } },
+    @{ name = "VS Code";      pathFinder = { Find-AppPath "Visual Studio Code" "code.exe" @("$env:LOCALAPPDATA\Programs\Microsoft VS Code", "$env:ProgramFiles\Microsoft VS Code") } },
+    @{ name = "Telegram";     pathFinder = { Find-AppPath "Telegram" "Telegram.exe" @("$env:APPDATA\Telegram Desktop", "$env:ProgramFiles\Telegram Desktop") } },
+    @{ name = "Google Drive"; pathFinder = { Find-AppPath "Google Drive" "GoogleDriveFS.exe" @("$env:ProgramFiles\Google\Drive File Stream", "$env:ProgramFiles (x86)\Google\Drive File Stream") } }
 )
 
 foreach ($app in $launch) {
-    if ($app.path -and (Test-Path $app.path)) {
-        Start-Process $app.path -RedirectStandardOutput NUL -RedirectStandardError NUL -ErrorAction SilentlyContinue
-        Log "  launched: $($app.name)" "Green"
+    $appPath = & $app.pathFinder
+    if ($appPath -and (Test-Path $appPath)) {
+        try {
+            Start-Process $appPath -RedirectStandardOutput NUL -RedirectStandardError NUL -ErrorAction Stop
+            Log "  launched: $($app.name)" "Green"
+        } catch {
+            Log "  failed to launch: $($app.name)" "Yellow"
+        }
     } else {
         Log "  not found, skipping: $($app.name)" "Yellow"
     }
