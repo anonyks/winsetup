@@ -444,8 +444,8 @@ $bravePath = Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware
 
 if ($bravePath) {
     try {
-        # Create registry paths for Brave associations
-        @("http", "https", "ftp") | ForEach-Object {
+        # Set Brave as default for http and https (only protocols that matter for browser)
+        @("http", "https") | ForEach-Object {
             $regPath = "HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\$_"
             $null = New-Item -Path $regPath -Force -ErrorAction SilentlyContinue
             Set-ItemProperty -Path $regPath -Name "ProgId" -Value "BraveSSC.$_" -Force -ErrorAction Stop
