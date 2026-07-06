@@ -174,23 +174,66 @@ function Install-WinGet {
         Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop | Out-Null
         Import-Module Microsoft.WinGet.Client -Force -ErrorAction Stop
 
-        Log "  repairing/registering winget" "Gray"
-        Repair-WinGetPackageManager -AllUsers -ErrorAction Stop | Out-Null
+        Log "  attempting WinGet package manager repair" "Gray"
+        try {
+            Repair-WinGetPackageManager -AllUsers -ErrorAction Stop | Out-Null
+        } catch {
+            Log "  repair failed, attempting direct download..." "Yellow"
+        }
     } catch {
-        Log "  PowerShell bootstrap failed: $($_.Exception.Message)" "Yellow"
-        Log "  trying direct App Installer package" "Gray"
-
-        $installer = "$env:TEMP\AppInstaller.msixbundle"
-        Invoke-WebRequest -Uri "https://aka.ms/getwinget" -OutFile $installer -UseBasicParsing -ErrorAction Stop
-        Add-AppxPackage -Path $installer -ErrorAction Stop
+        Log "  PowerShell bootstrap incomplete: $($_.Exception.Message)" "Yellow"
     }
 
+    # If winget is now available, we're done
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Log "winget installed successfully." "Green"
+        return
+    }
+
+    # Fallback: Direct AppInstaller download and install
+    Log "  downloading App Installer (AppInstaller.msixbundle)..." "Gray"
+    
+    $urls = @(
+        "https://aka.ms/getwinget",
+        "https://github.com/microsoft/winget-cli/releases/download/v1.6.3482/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
+    )
+    
+    foreach ($url in $urls) {
+        try {
+            $installer = "$env:TEMP\AppInstaller_$(Get-Random).msixbundle"
+            Log "    trying: $url" "Gray"
+            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop -TimeoutSec 30
+            
+            if (Test-Path $installer) {
+                Log "  installing AppInstaller..." "Gray"
+                try {
+                    Add-AppxPackage -Path $installer -ErrorAction Stop
+                    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+                    
+                    if (Get-Command winget -ErrorAction SilentlyContinue) {
+                        Log "winget installed successfully via AppInstaller." "Green"
+                        return
+                    }
+                } catch {
+                    Log "    AppInstaller installation failed: $($_.Exception.Message)" "Yellow"
+                    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {
+            Log "    download failed: $($_.Exception.Message)" "Yellow"
+        }
+    }
+
+    # Last resort: direct Store link
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Log "ERROR: winget install failed. Restart PowerShell or install App Installer manually, then re-run." "Red"
+        Log "ERROR: winget installation failed via all methods." "Red"
+        Log "Manual installation required:" "Yellow"
+        Log "  1. Open Microsoft Store" "Gray"
+        Log "  2. Search for 'App Installer'" "Gray"
+        Log "  3. Click 'Get' to install" "Gray"
+        Log "  4. Re-run this script" "Gray"
         exit 1
     }
-
-    Log "winget installed successfully." "Green"
 }
 
 "=== Setup Log - $(Get-Date) ===" | Set-Content $LogFile
