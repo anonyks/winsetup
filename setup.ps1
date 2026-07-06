@@ -614,15 +614,37 @@ if (Test-Path $publicDesktop) {
     }
 }
 
-# Remove all extra taskbar pins (keep only Brave and File Explorer)
+# Remove all extra taskbar pins (keep only Brave, File Explorer, and PowerShell Admin)
 $taskbarPath = Find-TaskbarPinsPath
 if ($taskbarPath -and (Test-Path $taskbarPath)) {
     $taskbarPins = @(Get-ChildItem $taskbarPath -Filter "*.lnk" -ErrorAction SilentlyContinue)
+    
+    # First, remove all pins except Brave, File Explorer, PowerShell
     foreach ($pin in $taskbarPins) {
         $pinName = $pin.BaseName.ToLower()
-        if ($pinName -notmatch "(brave|file explorer|explorer)") {
+        if ($pinName -notmatch "(brave|file explorer|explorer|powershell)") {
             Remove-Item $pin.FullName -Force -ErrorAction SilentlyContinue
             Log "  unpinned from taskbar: $($pin.BaseName)" "Gray"
+        }
+    }
+    
+    # Add PowerShell Admin to taskbar if not already pinned
+    $psAdminPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (Test-Path $psAdminPath) {
+        $psShortcutPath = Join-Path $taskbarPath "Windows PowerShell.lnk"
+        if (-not (Test-Path $psShortcutPath)) {
+            try {
+                $shell = New-Object -ComObject WScript.Shell
+                $shortcut = $shell.CreateShortcut($psShortcutPath)
+                $shortcut.TargetPath = $psAdminPath
+                $shortcut.Arguments = ""
+                $shortcut.Description = "Windows PowerShell"
+                $shortcut.Save()
+                [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+                Log "  pinned to taskbar: Windows PowerShell" "Gray"
+            } catch {
+                # Silent fail if can't create
+            }
         }
     }
 }
