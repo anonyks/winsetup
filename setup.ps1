@@ -52,12 +52,15 @@ function SetReg {
         $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
         if ($null -ne $current -and $current -eq $value) {
             Log "  already set: $label" "Gray"
+            return $false
         } else {
             Set-ItemProperty -Path $path -Name $name -Value $value -Type $type -Force -ErrorAction Stop | Out-Null
             Log "  applied: $label" "Green"
+            return $true
         }
     } catch {
         Log "  FAILED to set $label (access denied or path unavailable)" "Yellow"
+        return $false
     }
 }
 
@@ -406,6 +409,7 @@ Log "`n=== Killing unwanted processes ===" "Cyan"
 Log "`n=== Applying Windows tweaks ===" "Cyan"
 
 $explorerKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+$explorerRestartNeeded = $false
 
 # Set Brave as default browser
 $bravePath = Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware", "$env:ProgramFiles (x86)\BraveSoftware")
@@ -427,24 +431,26 @@ if ($bravePath) {
 }
 
 # Show file extensions
-SetReg $explorerKey "HideFileExt" 0 "DWord" "show file extensions"
+if (SetReg $explorerKey "HideFileExt" 0 "DWord" "show file extensions") { $explorerRestartNeeded = $true }
 
 # Collapse/hide File Explorer ribbon
-SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Ribbon" "Minimized" 1 "DWord" "collapse File Explorer ribbon"
+if (SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Ribbon" "Minimized" 1 "DWord" "collapse File Explorer ribbon") { $explorerRestartNeeded = $true }
 
 # Desktop icons - show only Recycle Bin
 $desktopIcons = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel"
-SetReg $desktopIcons "{645FF040-5081-101B-9F08-00AA002F954E}" 0 "DWord" "Recycle Bin on desktop (visible)"
-SetReg $desktopIcons "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWord" "This PC desktop icon (hidden)"
-SetReg $desktopIcons "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" 1 "DWord" "User folder desktop icon (hidden)"
-SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" "Network desktop icon (hidden)"
-SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)"
+if (SetReg $desktopIcons "{645FF040-5081-101B-9F08-00AA002F954E}" 0 "DWord" "Recycle Bin on desktop (visible)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWord" "This PC desktop icon (hidden)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" 1 "DWord" "User folder desktop icon (hidden)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" "Network desktop icon (hidden)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)") { $explorerRestartNeeded = $true }
 # Remove all shortcuts from desktop
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
 $shortcuts = Get-ChildItem $desktopPath -Include "*.lnk","*.url" -ErrorAction SilentlyContinue
-if ($shortcuts) {
+if ($shortcuts -and $shortcuts.Count -gt 0) {
     $shortcuts | Remove-Item -Force -ErrorAction SilentlyContinue
     Log "  removed $($shortcuts.Count) desktop shortcut(s)" "Green"
+} else {
+    Log "  no desktop shortcuts to remove" "Gray"
 }
 
 # Unpin all Start menu groups/pins
@@ -454,12 +460,22 @@ try {
         # Windows 11 - delete start2.bin, Windows recreates it clean on next login
         $start2 = Find-StartMenuConfigPath
         if ($start2) {
-            Remove-Item $start2 -Force -ErrorAction Stop
-            Log "  cleared Start menu pins (Win11 - takes effect after re-login)" "Green"
+            $fileSize = (Get-Item $start2 -ErrorAction SilentlyContinue).Length
+            # Only delete if file size is significant (not already cleared)
+            if ($fileSize -gt 1000) {
+                Remove-Item $start2 -Force -ErrorAction Stop
+                Log "  cleared Start menu pins (Win11 - takes effect after re-login)" "Green"
+            } else {
+                Log "  Start menu already cleared" "Gray"
+            }
         }
     } else {
         # Windows 10 - import a blank start layout
-        $xml = @"
+        $start10RegPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApps"
+        $start10Check = Get-ChildItem $start10RegPath -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count
+        
+        if ($start10Check -gt 0) {
+            $xml = @"
 <LayoutModificationTemplate xmlns:defaultlayout="http://schemas.microsoft.com/Start/2014/FullDefaultLayout"
     xmlns:start="http://schemas.microsoft.com/Start/2014/StartLayout" Version="1"
     xmlns="http://schemas.microsoft.com/Start/2014/LayoutModification">
@@ -471,10 +487,13 @@ try {
   </DefaultLayoutOverride>
 </LayoutModificationTemplate>
 "@
-        $xmlPath = "$env:TEMP\StartLayout.xml"
-        $xml | Set-Content $xmlPath -Encoding UTF8 -ErrorAction Stop
-        Import-StartLayout -LayoutPath $xmlPath -MountPath "$env:SystemDrive\" -ErrorAction Stop
-        Log "  cleared Start menu pins (Win10)" "Green"
+            $xmlPath = "$env:TEMP\StartLayout.xml"
+            $xml | Set-Content $xmlPath -Encoding UTF8 -ErrorAction Stop
+            Import-StartLayout -LayoutPath $xmlPath -MountPath "$env:SystemDrive\" -ErrorAction Stop
+            Log "  cleared Start menu pins (Win10)" "Green"
+        } else {
+            Log "  Start menu already cleared" "Gray"
+        }
     }
     Log "  desktop: only Recycle Bin visible" "Green"
 } catch {
@@ -493,20 +512,20 @@ SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetr
 
 # Dark theme
 $themePath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-SetReg $themePath "AppsUseLightTheme"    0 "DWord" "dark theme (apps)"
-SetReg $themePath "SystemUsesLightTheme" 0 "DWord" "dark theme (system)"
+if (SetReg $themePath "AppsUseLightTheme"    0 "DWord" "dark theme (apps)") { $explorerRestartNeeded = $true }
+if (SetReg $themePath "SystemUsesLightTheme" 0 "DWord" "dark theme (system)") { $explorerRestartNeeded = $true }
 
 # Hide search bar
-SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 0 "DWord" "taskbar search bar"
+if (SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 0 "DWord" "taskbar search bar") { $explorerRestartNeeded = $true }
 
 # Hide Copilot button
-SetReg $explorerKey "ShowCopilotButton"   0 "DWord" "taskbar Copilot button"
+if (SetReg $explorerKey "ShowCopilotButton"   0 "DWord" "taskbar Copilot button") { $explorerRestartNeeded = $true }
 
 # Hide Task View button
-SetReg $explorerKey "ShowTaskViewButton"  0 "DWord" "taskbar Task View button"
+if (SetReg $explorerKey "ShowTaskViewButton"  0 "DWord" "taskbar Task View button") { $explorerRestartNeeded = $true }
 
 # Hide News/Interests/Feeds
-SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Feeds" "ShellFeedsTaskbarViewMode" 2 "DWord" "News & Interests feed"
+if (SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Feeds" "ShellFeedsTaskbarViewMode" 2 "DWord" "News & Interests feed") { $explorerRestartNeeded = $true }
 SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "EnableFeeds" 0 "DWord" "Windows Feeds policy"
 
 # Remove pinned taskbar shortcuts (Edge, Store, Mail)
@@ -514,18 +533,22 @@ $taskbarPins = Find-TaskbarPinsPath
 if ($taskbarPins) {
     @("Microsoft Edge.lnk", "Microsoft Store.lnk", "Mail.lnk") | ForEach-Object {
         $p = Join-Path $taskbarPins $_
-        if (Test-Path $p) { Remove-Item $p -Force; Log "  removed taskbar pin: $_" "Green" }
+        if (Test-Path $p) { Remove-Item $p -Force; Log "  removed taskbar pin: $_" "Green"; $explorerRestartNeeded = $true }
     }
 }
 
-# Restart Explorer to apply taskbar/theme changes
-Log "  restarting Explorer to apply changes..." "Gray"
-try {
-    Stop-Process -Name explorer -Force -ErrorAction Stop
-    Start-Sleep -Seconds 2
-    Start-Process explorer -ErrorAction Stop
-} catch {
-    Log "  Explorer restart failed (changes may apply on next login)" "Yellow"
+# Restart Explorer only if changes were made
+if ($explorerRestartNeeded) {
+    Log "  restarting Explorer to apply changes..." "Gray"
+    try {
+        Stop-Process -Name explorer -Force -ErrorAction Stop
+        Start-Sleep -Seconds 2
+        Start-Process explorer -ErrorAction Stop
+    } catch {
+        Log "  Explorer restart failed (changes may apply on next login)" "Yellow"
+    }
+} else {
+    Log "  no Explorer changes needed" "Gray"
 }
 
 # -------------------------------------------------------
