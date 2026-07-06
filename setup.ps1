@@ -224,17 +224,24 @@ function Install-WinGet {
         }
     }
 
-    # Last resort: direct Store link
+    # Last resort: attempt via alternative GitHub mirror if available
+    Log "  attempting alternative installation sources..." "Gray"
+    try {
+        $altInstaller = "$env:TEMP\AppInstaller_alt_$(Get-Random).msixbundle"
+        Invoke-WebRequest -Uri "https://github.com/microsoft/winget-cli/releases/download/v1.7.10582/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" -OutFile $altInstaller -UseBasicParsing -ErrorAction Stop -TimeoutSec 30
+        
+        if (Test-Path $altInstaller) {
+            Add-AppxPackage -Path $altInstaller -ErrorAction Stop
+            Remove-Item $altInstaller -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Log "ERROR: winget installation failed via all methods." "Red"
-        Log "Manual installation required:" "Yellow"
-        Log "  1. Open Microsoft Store" "Gray"
-        Log "  2. Search for 'App Installer'" "Gray"
-        Log "  3. Click 'Get' to install" "Gray"
-        Log "  4. Re-run this script" "Gray"
+        Log "ERROR: winget installation failed. Cannot proceed without package manager." "Red"
         exit 1
     }
-}
+
+    Log "winget installed successfully." "Green"
 
 "=== Setup Log - $(Get-Date) ===" | Set-Content $LogFile
 
