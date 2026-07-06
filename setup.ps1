@@ -439,24 +439,6 @@ Log "`n=== Applying Windows tweaks ===" "Cyan"
 $explorerKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
 $explorerRestartNeeded = $false
 
-# Set Brave as default browser
-$bravePath = Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware", "$env:ProgramFiles (x86)\BraveSoftware")
-
-if ($bravePath) {
-    try {
-        # Use assoc and ftype commands (more reliable than registry on Windows 10/11)
-        $braveDir = Split-Path $bravePath
-        cmd /c "assoc .html=BraveSSC" 2>&1 | Out-Null
-        cmd /c "assoc .htm=BraveSSC" 2>&1 | Out-Null
-        cmd /c "ftype BraveSSC=`"$bravePath`" %%1" 2>&1 | Out-Null
-        Log "  set default browser: Brave" "Green"
-    } catch {
-        Log "  default browser set failed: $($_.Exception.Message)" "Yellow"
-    }
-} else {
-    Log "  Brave not found, skipping default browser (install first)" "Yellow"
-}
-
 # Show file extensions
 $null = SetReg $explorerKey "HideFileExt" 0 "DWord" "show file extensions"; if ($?) { $explorerRestartNeeded = $true }
 
