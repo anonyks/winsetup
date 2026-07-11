@@ -1,5 +1,11 @@
 # Windows VM Post-Install Setup
-# Usage: irm https://raw.githubusercontent.com/anonyks/winsetup/main/setup.ps1 | iex
+# Safer: irm ... -OutFile setup.ps1; notepad .\setup.ps1; .\setup.ps1
+# Quick:  irm https://raw.githubusercontent.com/anonyks/winsetup/main/setup.ps1 | iex
+
+param(
+    [switch]$SkipApps,
+    [switch]$NoLaunch
+)
 
 $SetupUrl = "https://raw.githubusercontent.com/anonyks/winsetup/main/setup.ps1"
 
@@ -12,9 +18,13 @@ function Test-IsAdmin {
 if (-not (Test-IsAdmin)) {
     Write-Host "Restarting setup as Administrator..." -ForegroundColor Yellow
 
+    $switchArgs = @()
+    if ($SkipApps) { $switchArgs += "-SkipApps" }
+    if ($NoLaunch) { $switchArgs += "-NoLaunch" }
+
     if ($PSCommandPath) {
         $scriptPath = $PSCommandPath -replace "'", "''"
-        $command = "& '$scriptPath'"
+        $command = "& '$scriptPath' $($switchArgs -join ' ')"
     } else {
         $command = "irm $SetupUrl | iex"
     }
@@ -172,6 +182,7 @@ function Find-PythonExe {
 
 function Install-WinGet {
     Log "winget not found. Installing..." "Yellow"
+    $psGalleryPolicy = $null
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -185,13 +196,16 @@ function Install-WinGet {
             Log "  NuGet provider already installed" "Gray"
         }
 
-        # Check and trust PSGallery if needed
+        # Temporarily trust PSGallery only for this bootstrap
         $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-        if ($psGallery.InstallationPolicy -ne "Trusted") {
-            Log "  trusting PSGallery" "Gray"
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-        } else {
-            Log "  PSGallery already trusted" "Gray"
+        if ($psGallery) {
+            $psGalleryPolicy = $psGallery.InstallationPolicy
+            if ($psGalleryPolicy -ne "Trusted") {
+                Log "  trusting PSGallery (temporary)" "Gray"
+                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+            } else {
+                Log "  PSGallery already trusted" "Gray"
+            }
         }
 
         # Check and install Microsoft.WinGet.Client module if needed
@@ -202,7 +216,7 @@ function Install-WinGet {
         } else {
             Log "  Microsoft.WinGet.Client module already installed" "Gray"
         }
-        
+
         Import-Module Microsoft.WinGet.Client -Force -ErrorAction Stop
 
         Log "  attempting WinGet package manager repair" "Gray"
@@ -213,6 +227,15 @@ function Install-WinGet {
         }
     } catch {
         Log "  PowerShell bootstrap incomplete: $($_.Exception.Message)" "Yellow"
+    } finally {
+        if ($null -ne $psGalleryPolicy -and $psGalleryPolicy -ne "Trusted") {
+            try {
+                Set-PSRepository -Name PSGallery -InstallationPolicy $psGalleryPolicy -ErrorAction Stop
+                Log "  restored PSGallery policy: $psGalleryPolicy" "Gray"
+            } catch {
+                Log "  could not restore PSGallery policy: $($_.Exception.Message)" "Yellow"
+            }
+        }
     }
 
     # If winget is now available, we're done
@@ -226,21 +249,21 @@ function Install-WinGet {
     
     $urls = @(
         "https://aka.ms/getwinget",
-        "https://github.com/microsoft/winget-cli/releases/download/v1.6.3482/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
+        "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
     )
-    
+
     foreach ($url in $urls) {
         try {
             $installer = "$env:TEMP\AppInstaller_$(Get-Random).msixbundle"
             Log "    trying: $url" "Gray"
-            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop -TimeoutSec 30
-            
+            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop -TimeoutSec 60
+
             if (Test-Path $installer) {
                 Log "  installing AppInstaller..." "Gray"
                 try {
                     Add-AppxPackage -Path $installer -ErrorAction Stop
                     Remove-Item $installer -Force -ErrorAction SilentlyContinue
-                    
+
                     if (Get-Command winget -ErrorAction SilentlyContinue) {
                         Log "winget installed successfully via AppInstaller." "Green"
                         return
@@ -255,18 +278,6 @@ function Install-WinGet {
         }
     }
 
-    # Last resort: attempt via alternative GitHub mirror if available
-    Log "  attempting alternative installation sources..." "Gray"
-    try {
-        $altInstaller = "$env:TEMP\AppInstaller_alt_$(Get-Random).msixbundle"
-        Invoke-WebRequest -Uri "https://github.com/microsoft/winget-cli/releases/download/v1.7.10582/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" -OutFile $altInstaller -UseBasicParsing -ErrorAction Stop -TimeoutSec 30
-        
-        if (Test-Path $altInstaller) {
-            Add-AppxPackage -Path $altInstaller -ErrorAction Stop
-            Remove-Item $altInstaller -Force -ErrorAction SilentlyContinue
-        }
-    } catch {}
-
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Log "ERROR: winget installation failed. Cannot proceed without package manager." "Red"
         exit 1
@@ -280,7 +291,7 @@ function Install-WinGet {
 $apps = @(
     @{ id = "Brave.Brave";                    name = "Brave Browser" },
     @{ id = "Telegram.TelegramDesktop";       name = "Telegram" },
-    @{ id = "Emurasoft.EmEditor";             name = "EmEditor"; version = "25.0.0" },
+    @{ id = "Emurasoft.EmEditor";             name = "EmEditor" },
     @{ id = "Python.Python.3.10";             name = "Python 3.10" },
     @{ id = "Google.GoogleDrive";             name = "Google Drive" },
     @{ id = "RARLab.WinRAR";                  name = "WinRAR" },
@@ -308,40 +319,44 @@ if ($LASTEXITCODE -eq 0) {
 # -------------------------------------------------------
 # 2. Install apps
 # -------------------------------------------------------
-Log "`nInstalling $($apps.Count) apps..." "Gray"
-
 $installed  = @()
 $alreadyHad = @()
 $failed     = @()
 
-foreach ($app in $apps) {
-    $n = [array]::IndexOf($apps, $app) + 1
-    Log "[$n/$($apps.Count)] $($app.name)" "Cyan"
-
-    $versionArg = if ($app.version) { @("-v", $app.version) } else { @() }
-    $out  = winget install --id $app.id -e --silent @versionArg --accept-package-agreements --accept-source-agreements 2>&1
-    $code = $LASTEXITCODE
-    $out | ForEach-Object { Add-Content -Path $LogFile -Value "    $_" }
-
-    if ($code -eq 0) {
-        Log "  -> installed" "Green"
-        $installed += $app.name
-    } elseif ($code -eq -1978335189) {
-        Log "  -> already installed" "Yellow"
-        $alreadyHad += $app.name
-    } else {
-        Log "  -> FAILED (exit $code)" "Red"
-        $failed += $app.name
-    }
-}
-
-Log "`n--- App Summary ---" "Cyan"
-Log "Installed   : $($installed.Count)  $(if ($installed.Count)  { "($($installed  -join ', '))" })" "Green"
-Log "Already had : $($alreadyHad.Count) $(if ($alreadyHad.Count) { "($($alreadyHad -join ', '))" })" "Yellow"
-if ($failed.Count -gt 0) {
-    Log "Failed      : $($failed.Count)  ($($failed -join ', '))" "Red"
+if ($SkipApps) {
+    Log "`nSkipping app installs (-SkipApps)" "Yellow"
 } else {
-    Log "Failed      : 0" "Gray"
+    Log "`nInstalling $($apps.Count) apps..." "Gray"
+
+    foreach ($app in $apps) {
+        $n = [array]::IndexOf($apps, $app) + 1
+        Log "[$n/$($apps.Count)] $($app.name)" "Cyan"
+
+        $versionArg = if ($app.version) { @("-v", $app.version) } else { @() }
+        $out  = winget install --id $app.id -e --silent @versionArg --accept-package-agreements --accept-source-agreements 2>&1
+        $code = $LASTEXITCODE
+        $out | ForEach-Object { Add-Content -Path $LogFile -Value "    $_" }
+
+        if ($code -eq 0) {
+            Log "  -> installed" "Green"
+            $installed += $app.name
+        } elseif ($code -eq -1978335189) {
+            Log "  -> already installed" "Yellow"
+            $alreadyHad += $app.name
+        } else {
+            Log "  -> FAILED (exit $code)" "Red"
+            $failed += $app.name
+        }
+    }
+
+    Log "`n--- App Summary ---" "Cyan"
+    Log "Installed   : $($installed.Count)  $(if ($installed.Count)  { "($($installed  -join ', '))" })" "Green"
+    Log "Already had : $($alreadyHad.Count) $(if ($alreadyHad.Count) { "($($alreadyHad -join ', '))" })" "Yellow"
+    if ($failed.Count -gt 0) {
+        Log "Failed      : $($failed.Count)  ($($failed -join ', '))" "Red"
+    } else {
+        Log "Failed      : 0" "Gray"
+    }
 }
 
 # -------------------------------------------------------
@@ -440,20 +455,18 @@ $explorerKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advance
 $explorerRestartNeeded = $false
 
 # Show file extensions
-$null = SetReg $explorerKey "HideFileExt" 0 "DWord" "show file extensions"; if ($?) { $explorerRestartNeeded = $true }
+if (SetReg $explorerKey "HideFileExt" 0 "DWord" "show file extensions") { $explorerRestartNeeded = $true }
 
 # Collapse/hide File Explorer ribbon
-$null = SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Ribbon" "Minimized" 1 "DWord" "collapse File Explorer ribbon"; if ($?) { $explorerRestartNeeded = $true }
+if (SetReg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Ribbon" "Minimized" 1 "DWord" "collapse File Explorer ribbon") { $explorerRestartNeeded = $true }
 
 # Desktop icons - show only Recycle Bin
 $desktopIcons = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel"
-$null = SetReg $desktopIcons "{645FF040-5081-101B-9F08-00AA002F954E}" 0 "DWord" "Recycle Bin on desktop (visible)"; if ($?) { $explorerRestartNeeded = $true }
-$null = SetReg $desktopIcons "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWord" "This PC desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
-$null = SetReg $desktopIcons "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" 1 "DWord" "User folder desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
-$null = SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" "Network desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
-$null = SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
-# Remove all shortcuts from desktop
-$null = SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)"; if ($?) { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{645FF040-5081-101B-9F08-00AA002F954E}" 0 "DWord" "Recycle Bin on desktop (visible)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" 1 "DWord" "This PC desktop icon (hidden)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{59031a47-3f72-44a7-89c5-5595fe6b30ee}" 1 "DWord" "User folder desktop icon (hidden)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" 1 "DWord" "Network desktop icon (hidden)") { $explorerRestartNeeded = $true }
+if (SetReg $desktopIcons "{018D5C66-4533-4307-9B53-224DE2ED1FE6}" 1 "DWord" "OneDrive desktop icon (hidden)") { $explorerRestartNeeded = $true }
 
 # Unpin all Start menu groups/pins
 $winBuild = [System.Environment]::OSVersion.Version.Build
@@ -563,36 +576,48 @@ if ($explorerRestartNeeded) {
 # -------------------------------------------------------
 Log "`n=== All done! Log saved to: $LogFile ===" "Cyan"
 
-# Launch apps
-Log "`n=== Launching apps ===" "Cyan"
+# Launch only newly installed apps (skip on re-runs / -NoLaunch)
+$shouldLaunch = -not $NoLaunch -and -not $SkipApps -and $installed.Count -gt 0
 
-$launch = @(
-    @{ name = "Brave";        pathFinder = { Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware") } },
-    @{ name = "Telegram";     pathFinder = { Find-AppPath "Telegram" "Telegram.exe" @("$env:APPDATA\Telegram Desktop", "$env:ProgramFiles\Telegram Desktop") } },
-    @{ name = "VS Code";      pathFinder = { Find-AppPath "Visual Studio Code" "code.exe" @("$env:LOCALAPPDATA\Programs\Microsoft VS Code", "$env:ProgramFiles\Microsoft VS Code") } },
-    @{ name = "Google Drive"; pathFinder = { Find-AppPath "Google Drive" "GoogleDriveFS.exe" @("$env:ProgramFiles\Google\Drive File Stream", "$env:ProgramFiles (x86)\Google\Drive File Stream") } }
-)
-
-foreach ($app in $launch) {
-    try {
-        $appPath = & $app.pathFinder
-        if ($appPath -and (Test-Path $appPath)) {
-            try {
-                Start-Process $appPath -WindowStyle Hidden -ErrorAction Stop
-                Log "  launched: $($app.name)" "Green"
-            } catch {
-                Log "  failed to launch: $($app.name) ($($_.Exception.Message))" "Yellow"
-            }
-        } else {
-            Log "  not found, skipping: $($app.name)" "Yellow"
-        }
-    } catch {
-        Log "  error finding path for $($app.name): $($_.Exception.Message)" "Yellow"
+if (-not $shouldLaunch) {
+    if ($NoLaunch) {
+        Log "`nSkipping app launch (-NoLaunch)" "Yellow"
+    } elseif ($SkipApps) {
+        Log "`nSkipping app launch (-SkipApps)" "Yellow"
+    } else {
+        Log "`nNo new apps installed — skipping launch" "Gray"
     }
-}
+} else {
+    Log "`n=== Launching apps ===" "Cyan"
 
-# Wait a moment for apps to create shortcuts, then remove all desktop shortcuts
-Start-Sleep -Seconds 5
+    $launch = @(
+        @{ name = "Brave";        pathFinder = { Find-AppPath "Brave" "brave.exe" @("$env:LOCALAPPDATA\BraveSoftware", "$env:ProgramFiles\BraveSoftware") } },
+        @{ name = "Telegram";     pathFinder = { Find-AppPath "Telegram" "Telegram.exe" @("$env:APPDATA\Telegram Desktop", "$env:ProgramFiles\Telegram Desktop") } },
+        @{ name = "VS Code";      pathFinder = { Find-AppPath "Visual Studio Code" "code.exe" @("$env:LOCALAPPDATA\Programs\Microsoft VS Code", "$env:ProgramFiles\Microsoft VS Code") } },
+        @{ name = "Google Drive"; pathFinder = { Find-AppPath "Google Drive" "GoogleDriveFS.exe" @("$env:ProgramFiles\Google\Drive File Stream", "$env:ProgramFiles (x86)\Google\Drive File Stream") } }
+    )
+
+    foreach ($app in $launch) {
+        try {
+            $appPath = & $app.pathFinder
+            if ($appPath -and (Test-Path $appPath)) {
+                try {
+                    Start-Process $appPath -WindowStyle Hidden -ErrorAction Stop
+                    Log "  launched: $($app.name)" "Green"
+                } catch {
+                    Log "  failed to launch: $($app.name) ($($_.Exception.Message))" "Yellow"
+                }
+            } else {
+                Log "  not found, skipping: $($app.name)" "Yellow"
+            }
+        } catch {
+            Log "  error finding path for $($app.name): $($_.Exception.Message)" "Yellow"
+        }
+    }
+
+    # Wait for installers to drop desktop shortcuts, then clean
+    Start-Sleep -Seconds 5
+}
 
 # Clean user desktop
 $desktopPath = [System.Environment]::GetFolderPath("Desktop")
