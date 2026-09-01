@@ -186,71 +186,12 @@ function Find-PythonExe {
 
 function Install-WinGet {
     Log "winget not found. Installing..." "Yellow"
-    $psGalleryPolicy = $null
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-        # Check and install NuGet if needed
-        $nugetCheck = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
-        if (-not $nugetCheck) {
-            Log "  installing NuGet provider" "Gray"
-            Install-PackageProvider -Name NuGet -Force -ErrorAction Stop | Out-Null
-        } else {
-            Log "  NuGet provider already installed" "Gray"
-        }
-
-        # Temporarily trust PSGallery only for this bootstrap
-        $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-        if ($psGallery) {
-            $psGalleryPolicy = $psGallery.InstallationPolicy
-            if ($psGalleryPolicy -ne "Trusted") {
-                Log "  trusting PSGallery (temporary)" "Gray"
-                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-            } else {
-                Log "  PSGallery already trusted" "Gray"
-            }
-        }
-
-        # Check and install Microsoft.WinGet.Client module if needed
-        $moduleCheck = Get-Module -Name Microsoft.WinGet.Client -ListAvailable -ErrorAction SilentlyContinue
-        if (-not $moduleCheck) {
-            Log "  installing Microsoft.WinGet.Client module" "Gray"
-            Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop | Out-Null
-        } else {
-            Log "  Microsoft.WinGet.Client module already installed" "Gray"
-        }
-
-        Import-Module Microsoft.WinGet.Client -Force -ErrorAction Stop
-
-        Log "  attempting WinGet package manager repair" "Gray"
-        try {
-            Repair-WinGetPackageManager -AllUsers -ErrorAction Stop | Out-Null
-        } catch {
-            Log "  repair failed, attempting direct download..." "Yellow"
-        }
-    } catch {
-        Log "  PowerShell bootstrap incomplete: $($_.Exception.Message)" "Yellow"
-    } finally {
-        if ($null -ne $psGalleryPolicy -and $psGalleryPolicy -ne "Trusted") {
-            try {
-                Set-PSRepository -Name PSGallery -InstallationPolicy $psGalleryPolicy -ErrorAction Stop
-                Log "  restored PSGallery policy: $psGalleryPolicy" "Gray"
-            } catch {
-                Log "  could not restore PSGallery policy: $($_.Exception.Message)" "Yellow"
-            }
-        }
-    }
-
-    # If winget is now available, we're done
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Log "winget installed successfully." "Green"
-        return
-    }
-
-    # Fallback: Direct AppInstaller download and install
-    Log "  downloading App Installer (AppInstaller.msixbundle)..." "Gray"
-    
+    # Direct AppInstaller download/install: the PSGallery/NuGet-provider/
+    # Repair-WinGetPackageManager route is slower (a package provider prompt,
+    # a full module download, then a repair call that often fails anyway) and
+    # still falls back to this exact same download when it doesn't work out.
     $urls = @(
         "https://aka.ms/getwinget",
         "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
@@ -259,26 +200,19 @@ function Install-WinGet {
     foreach ($url in $urls) {
         try {
             $installer = "$env:TEMP\AppInstaller_$(Get-Random).msixbundle"
-            Log "    trying: $url" "Gray"
+            Log "  downloading App Installer from $url" "Gray"
             Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop -TimeoutSec 60
 
-            if (Test-Path $installer) {
-                Log "  installing AppInstaller..." "Gray"
-                try {
-                    Add-AppxPackage -Path $installer -ErrorAction Stop
-                    Remove-Item $installer -Force -ErrorAction SilentlyContinue
+            Log "  installing AppInstaller..." "Gray"
+            Add-AppxPackage -Path $installer -ErrorAction Stop
+            Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
-                    if (Get-Command winget -ErrorAction SilentlyContinue) {
-                        Log "winget installed successfully via AppInstaller." "Green"
-                        return
-                    }
-                } catch {
-                    Log "    AppInstaller installation failed: $($_.Exception.Message)" "Yellow"
-                    Remove-Item $installer -Force -ErrorAction SilentlyContinue
-                }
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                Log "winget installed successfully." "Green"
+                return
             }
         } catch {
-            Log "    download failed: $($_.Exception.Message)" "Yellow"
+            Log "    failed via $url : $($_.Exception.Message)" "Yellow"
         }
     }
 
@@ -286,8 +220,6 @@ function Install-WinGet {
         Log "ERROR: winget installation failed. Cannot proceed without package manager." "Red"
         exit 1
     }
-
-    Log "winget installed successfully." "Green"
 }
 
 "=== Setup Log - $(Get-Date) ===" | Set-Content $LogFile
