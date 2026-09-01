@@ -56,7 +56,7 @@ function Log {
 }
 
 function SetReg {
-    param([string]$path, [string]$name, $value, [string]$type = "DWord", [string]$label)
+    param([string]$path, [string]$name, $value, [string]$type = "DWord", [string]$label, [switch]$Quiet)
     try {
         if (-not (Test-Path $path)) { New-Item -Path $path -Force -ErrorAction Stop | Out-Null }
         $current = (Get-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue).$name
@@ -69,7 +69,11 @@ function SetReg {
             return $true
         }
     } catch {
-        Log "  FAILED to set $label (access denied or path unavailable)" "Yellow"
+        if ($Quiet) {
+            Log "  skipped: $label (not writable on this build)" "Gray"
+        } else {
+            Log "  FAILED to set $label : $($_.Exception.Message)" "Yellow"
+        }
         return $false
     }
 }
@@ -539,10 +543,12 @@ if (SetReg $explorerKey "ShowCopilotButton"   0 "DWord" "taskbar Copilot button"
 # Hide Task View button
 if (SetReg $explorerKey "ShowTaskViewButton"  0 "DWord" "taskbar Task View button") { $explorerRestartNeeded = $true }
 
-# Hide News/Interests/Feeds
+# Hide News/Interests/Feeds. The policy line below is what actually disables it;
+# this per-user toggle is a legacy add-on and is locked down on newer Windows 11
+# builds (News & Interests was replaced by Widgets), so its failure is harmless.
 $feedsPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Feeds"
 if (Test-Path $feedsPath) {
-    if (SetReg $feedsPath "ShellFeedsTaskbarViewMode" 2 "DWord" "News & Interests feed") { $explorerRestartNeeded = $true }
+    if (SetReg $feedsPath "ShellFeedsTaskbarViewMode" 2 "DWord" "News & Interests feed" -Quiet) { $explorerRestartNeeded = $true }
 } else {
     Log "  News & Interests path not found (may not apply to this system)" "Gray"
 }
