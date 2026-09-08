@@ -189,20 +189,117 @@ function Find-PythonExe {
     return Find-AppPath "Python" "python.exe" $commonPaths
 }
 
-function Install-WindowsAppRuntime {
-    # Newer App Installer releases depend on this framework; older/fresh
-    # Windows 10/11 images often don't have it yet. ~100MB, so only fetched
-    # reactively when Add-AppxPackage actually fails on it, not every run.
-    Log "    installing Windows App Runtime (missing dependency)..." "Gray"
+function Get-DownloadsFolder {
+    # Respects a user-relocated Downloads folder instead of assuming the default path.
     try {
-        $waInstaller = "$env:TEMP\WindowsAppRuntimeInstall_$(Get-Random).exe"
-        Invoke-WebRequest -Uri "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe" -OutFile $waInstaller -UseBasicParsing -ErrorAction Stop -TimeoutSec 120
-        Start-Process -FilePath $waInstaller -ArgumentList "--quiet" -Wait -ErrorAction Stop
-        Remove-Item $waInstaller -Force -ErrorAction SilentlyContinue
-        return $true
-    } catch {
-        Log "    Windows App Runtime install failed: $($_.Exception.Message)" "Yellow"
+        $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+        $path = (Get-ItemProperty -Path $key -Name "{374DE290-123F-4565-9164-39C4925E467B}" -ErrorAction Stop)."{374DE290-123F-4565-9164-39C4925E467B}"
+        if ($path) { return $path }
+    } catch {}
+    return "$env:USERPROFILE\Downloads"
+}
+
+function Wait-ForBrowserDownload {
+    param([string]$Extension, [datetime]$Since, [int]$TimeoutSec = 600)
+    $downloads = Get-DownloadsFolder
+    Log "  waiting for the file in $downloads (up to $([int]($TimeoutSec/60)) min)..." "Cyan"
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $lastSize = -1
+    $lastPath = $null
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 3
+        $candidates = Get-ChildItem -Path $downloads -Filter "*$Extension" -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -ge $Since } | Sort-Object LastWriteTime -Descending
+        if (-not $candidates) { continue }
+        $f = $candidates[0]
+        # Browsers keep a .crdownload/.tmp/.partial sibling until the save finishes.
+        $stillSaving = Get-ChildItem -Path $downloads -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "$($f.BaseName)*" -and $_.Extension -in ".crdownload", ".tmp", ".partial" }
+        if ($stillSaving) { continue }
+        if ($f.FullName -eq $lastPath -and $f.Length -eq $lastSize -and $f.Length -gt 0) {
+            return $f.FullName
+        }
+        $lastPath = $f.FullName
+        $lastSize = $f.Length
+    }
+    return $null
+}
+
+function Get-FileRobust {
+    # Tries a fast direct download with a real wall-clock cap (Invoke-WebRequest's
+    # own -TimeoutSec only covers the initial connect, not a slow-but-progressing
+    # transfer, so a background job + Wait-Job is what actually enforces this).
+    # Falls back to opening the URL in the default browser and watching Downloads
+    # for the saved file when the direct route is too big or too slow.
+    param([string]$Uri, [string]$OutFile, [int]$FastTimeoutSec = 45, [int]$BrowserTimeoutSec = 600)
+
+    $since = Get-Date
+    $job = Start-Job -ScriptBlock {
+        param($u, $o)
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $u -OutFile $o -UseBasicParsing
+    } -ArgumentList $Uri, $OutFile
+
+    $done = Wait-Job -Job $job -Timeout $FastTimeoutSec
+    $ok = $done -and $job.State -eq 'Completed' -and (Test-Path $OutFile) -and (Get-Item $OutFile).Length -gt 0
+    Stop-Job -Job $job -ErrorAction SilentlyContinue
+    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    if ($ok) { return $true }
+    if (Test-Path $OutFile) { Remove-Item $OutFile -Force -ErrorAction SilentlyContinue }
+
+    Log "  direct download too slow, opening it in your browser instead - save the file, it'll be picked up automatically" "Yellow"
+    Start-Process $Uri
+    $ext = [IO.Path]::GetExtension(([Uri]$Uri).Segments[-1])
+    if (-not $ext) { $ext = [IO.Path]::GetExtension($OutFile) }
+    $found = Wait-ForBrowserDownload -Extension $ext -Since $since -TimeoutSec $BrowserTimeoutSec
+    if (-not $found) {
+        Log "  no browser download detected within $([int]($BrowserTimeoutSec/60)) min" "Red"
         return $false
+    }
+    Move-Item -Path $found -Destination $OutFile -Force
+    Log "  picked up from Downloads: $([IO.Path]::GetFileName($found))" "Green"
+    return $true
+}
+
+function Install-AppInstallerDependencies {
+    # Newer App Installer releases depend on specific VCLibs/WindowsAppRuntime
+    # framework versions that older/fresh Windows images don't have yet - and
+    # which exact frameworks/versions has changed release to release (hit
+    # WindowsAppRuntime first, then an outdated VCLibs). Rather than chase each
+    # one individually, install Microsoft's own per-release dependency bundle,
+    # which is guaranteed to match whatever AppInstaller version was just
+    # downloaded since it comes from the same GitHub release.
+    Log "    installing App Installer dependencies (VCLibs / WindowsAppRuntime)..." "Gray"
+    $zipPath = "$env:TEMP\AppInstallerDeps_$(Get-Random).zip"
+    $extractPath = "$env:TEMP\AppInstallerDeps_$(Get-Random)"
+    if (-not (Get-FileRobust -Uri "https://github.com/microsoft/winget-cli/releases/latest/download/DesktopAppInstaller_Dependencies.zip" -OutFile $zipPath -FastTimeoutSec 90)) {
+        return $false
+    }
+    try {
+        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force -ErrorAction Stop
+        $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+            "ARM64" { "arm64" }
+            "x86"   { "x86" }
+            default { "x64" }
+        }
+        $depFiles = Get-ChildItem -Path (Join-Path $extractPath $arch) -Filter "*.appx" -ErrorAction Stop
+        $anyOk = $false
+        foreach ($dep in $depFiles) {
+            try {
+                Add-AppxPackage -Path $dep.FullName -ErrorAction Stop
+                Log "    installed dependency: $($dep.Name)" "Green"
+                $anyOk = $true
+            } catch {
+                Log "    dependency install failed ($($dep.Name)): $($_.Exception.Message)" "Yellow"
+            }
+        }
+        return $anyOk
+    } catch {
+        Log "    dependency extraction failed: $($_.Exception.Message)" "Yellow"
+        return $false
+    } finally {
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -223,15 +320,17 @@ function Install-WinGet {
         try {
             $installer = "$env:TEMP\AppInstaller_$(Get-Random).msixbundle"
             Log "  downloading App Installer from $url" "Gray"
-            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop -TimeoutSec 60
+            if (-not (Get-FileRobust -Uri $url -OutFile $installer)) {
+                throw "download failed (direct and browser fallback both unsuccessful)"
+            }
 
             Log "  installing AppInstaller..." "Gray"
             try {
                 Add-AppxPackage -Path $installer -ErrorAction Stop
             } catch {
-                if ($_.Exception.Message -match "WindowsAppRuntime") {
-                    Log "  missing Windows App Runtime dependency, retrying after install..." "Yellow"
-                    if (Install-WindowsAppRuntime) {
+                if ($_.Exception.Message -match "depends on a framework that could not be found") {
+                    Log "  missing/outdated framework dependency, installing dependencies and retrying..." "Yellow"
+                    if (Install-AppInstallerDependencies) {
                         Add-AppxPackage -Path $installer -ErrorAction Stop
                     } else {
                         throw
