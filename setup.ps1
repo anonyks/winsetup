@@ -734,7 +734,7 @@ if ($taskbarPath -and (Test-Path $taskbarPath)) {
     }
     
     # Add PowerShell Admin to taskbar if not already pinned
-    $psAdminPath = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $psAdminPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     if (Test-Path $psAdminPath) {
         $psShortcutPath = Join-Path $taskbarPath "Windows PowerShell.lnk"
         if (-not (Test-Path $psShortcutPath)) {
