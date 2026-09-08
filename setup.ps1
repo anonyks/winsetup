@@ -7,6 +7,11 @@ param(
     [switch]$NoLaunch
 )
 
+# Windows PowerShell's Invoke-WebRequest renders a progress bar that can make
+# downloads 10-100x slower than the actual network allows. Nothing here needs
+# a visible progress bar, so disable it globally for every download below.
+$ProgressPreference = 'SilentlyContinue'
+
 $SetupUrl = "https://raw.githubusercontent.com/anonyks/winsetup/main/setup.ps1"
 
 function Test-IsAdmin {
