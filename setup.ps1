@@ -51,7 +51,10 @@ if ($buildNumber -lt 19041) {
     exit 1
 }
 
-$LogFile = "$env:USERPROFILE\Desktop\setup-log.txt"
+# Resolves the real Desktop path even when it's redirected (OneDrive Known
+# Folder Move is common on managed/corporate Windows images), instead of
+# assuming the default under USERPROFILE.
+$LogFile = Join-Path ([Environment]::GetFolderPath('Desktop')) "setup-log.txt"
 
 function Log {
     param([string]$msg, [string]$color = "Gray")
@@ -328,7 +331,10 @@ function Install-WinGet {
             try {
                 Add-AppxPackage -Path $installer -ErrorAction Stop
             } catch {
-                if ($_.Exception.Message -match "depends on a framework that could not be found") {
+                # Match the HRESULT (0x80073CF3), not the English description text -
+                # Windows keeps the hex code untranslated on every display language,
+                # but the surrounding prose is localized and won't match on non-English builds.
+                if ($_.Exception.Message -match "0x80073CF3") {
                     Log "  missing/outdated framework dependency, installing dependencies and retrying..." "Yellow"
                     if (Install-AppInstallerDependencies) {
                         Add-AppxPackage -Path $installer -ErrorAction Stop
@@ -701,8 +707,10 @@ if ($shortcuts.Count -gt 0) {
     Log "`n  desktop is clean (no shortcuts)" "Gray"
 }
 
-# Clean Public Desktop (if accessible)
-$publicDesktop = "C:\Users\Public\Desktop"
+# Clean Public Desktop (if accessible). Resolved dynamically instead of
+# assuming C:\, since the OS drive letter isn't always C: (e.g. some Azure
+# VM images).
+$publicDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
 if (Test-Path $publicDesktop) {
     $publicShortcuts = @(Get-ChildItem $publicDesktop -Filter "*.lnk" -ErrorAction SilentlyContinue) + @(Get-ChildItem $publicDesktop -Filter "*.url" -ErrorAction SilentlyContinue)
     if ($publicShortcuts.Count -gt 0) {
