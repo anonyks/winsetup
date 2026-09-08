@@ -184,6 +184,23 @@ function Find-PythonExe {
     return Find-AppPath "Python" "python.exe" $commonPaths
 }
 
+function Install-WindowsAppRuntime {
+    # Newer App Installer releases depend on this framework; older/fresh
+    # Windows 10/11 images often don't have it yet. ~100MB, so only fetched
+    # reactively when Add-AppxPackage actually fails on it, not every run.
+    Log "    installing Windows App Runtime (missing dependency)..." "Gray"
+    try {
+        $waInstaller = "$env:TEMP\WindowsAppRuntimeInstall_$(Get-Random).exe"
+        Invoke-WebRequest -Uri "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe" -OutFile $waInstaller -UseBasicParsing -ErrorAction Stop -TimeoutSec 120
+        Start-Process -FilePath $waInstaller -ArgumentList "--quiet" -Wait -ErrorAction Stop
+        Remove-Item $waInstaller -Force -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        Log "    Windows App Runtime install failed: $($_.Exception.Message)" "Yellow"
+        return $false
+    }
+}
+
 function Install-WinGet {
     Log "winget not found. Installing..." "Yellow"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -204,7 +221,20 @@ function Install-WinGet {
             Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop -TimeoutSec 60
 
             Log "  installing AppInstaller..." "Gray"
-            Add-AppxPackage -Path $installer -ErrorAction Stop
+            try {
+                Add-AppxPackage -Path $installer -ErrorAction Stop
+            } catch {
+                if ($_.Exception.Message -match "WindowsAppRuntime") {
+                    Log "  missing Windows App Runtime dependency, retrying after install..." "Yellow"
+                    if (Install-WindowsAppRuntime) {
+                        Add-AppxPackage -Path $installer -ErrorAction Stop
+                    } else {
+                        throw
+                    }
+                } else {
+                    throw
+                }
+            }
             Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
             if (Get-Command winget -ErrorAction SilentlyContinue) {
