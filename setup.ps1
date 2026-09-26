@@ -380,14 +380,40 @@ $apps = @(
 # -------------------------------------------------------
 Log "`n=== Windows Setup ===" "Cyan"
 
+function Get-WingetVersion {
+    # Validate the output: right after AppInstaller installs/updates, the
+    # execution alias can briefly misbehave and print the help text (with
+    # "Unrecognized command: <path>") instead of a version number.
+    $out = (& winget --version 2>&1 | Out-String).Trim()
+    if ($out -match '^v?\d+(\.\d+)+') { return $out }
+    return $null
+}
+
+function Wait-WingetReady {
+    param([int]$TimeoutSec = 30)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        $v = Get-WingetVersion
+        if ($v) { return $v }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+    return $null
+}
+
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     Install-WinGet
 }
-Log "winget $(winget --version) detected." "Gray"
+$wingetBefore = Wait-WingetReady
+if ($wingetBefore) {
+    Log "winget $wingetBefore detected." "Gray"
+} else {
+    Log "winget is installed but not responding yet, continuing anyway" "Yellow"
+}
 Write-Host "Checking for winget update..." -NoNewline
 winget upgrade --id Microsoft.AppInstaller --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Log "updated to $(winget --version)" "Green"
+$wingetAfter = Wait-WingetReady
+if ($wingetAfter -and $wingetAfter -ne $wingetBefore) {
+    Log "updated to $wingetAfter" "Green"
 } else {
     Log "already up to date" "Gray"
 }
