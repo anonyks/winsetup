@@ -421,6 +421,76 @@ if ($wingetAfter -and $wingetAfter -ne $wingetBefore) {
 # -------------------------------------------------------
 # 2. Install apps
 # -------------------------------------------------------
+function Invoke-InstallBatch {
+    # Runs winget installs as background jobs, at most $Throttle at a time.
+    # A per-job timeout keeps one hung installer from stalling the whole run
+    # (stopping the job abandons it; the installer process itself may linger).
+    param([object[]]$Apps, [int]$Throttle = 4, [int]$JobTimeoutSec = 900)
+
+    # --source winget skips the msstore lookup: faster, and avoids msstore
+    # source failures that are common on fresh VMs.
+    $installBlock = {
+        param($id, $version)
+        $ProgressPreference = 'SilentlyContinue'
+        $versionArg = if ($version) { @("-v", $version) } else { @() }
+        $out = winget install --id $id -e --source winget --silent @versionArg --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
+        [pscustomobject]@{ Code = $LASTEXITCODE; Output = ($out | Out-String); TimedOut = $false }
+    }
+
+    $results = @{}
+    $pending = New-Object System.Collections.Queue
+    foreach ($a in $Apps) { $pending.Enqueue($a) }
+    $running = @()
+
+    while ($pending.Count -gt 0 -or $running.Count -gt 0) {
+        while ($pending.Count -gt 0 -and $running.Count -lt $Throttle) {
+            $app = $pending.Dequeue()
+            $job = Start-Job -ScriptBlock $installBlock -ArgumentList $app.id, $app.version
+            $running += [pscustomobject]@{ Job = $job; App = $app; Started = Get-Date }
+            Log "  started: $($app.name)" "Gray"
+        }
+
+        Start-Sleep -Milliseconds 500
+        $stillRunning = @()
+        foreach ($r in $running) {
+            $timedOut = ((Get-Date) - $r.Started).TotalSeconds -gt $JobTimeoutSec
+            if ($r.Job.State -eq 'Running' -and -not $timedOut) { $stillRunning += $r; continue }
+
+            if ($r.Job.State -eq 'Running') { Stop-Job -Job $r.Job -ErrorAction SilentlyContinue }
+            $res = @(Receive-Job -Job $r.Job -ErrorAction SilentlyContinue) |
+                Where-Object { $_.PSObject.Properties['Code'] } | Select-Object -Last 1
+            Remove-Job -Job $r.Job -Force -ErrorAction SilentlyContinue
+
+            if ($timedOut) {
+                $res = [pscustomobject]@{ Code = -1; Output = "timed out after ${JobTimeoutSec}s"; TimedOut = $true }
+            } elseif (-not $res) {
+                $res = [pscustomobject]@{ Code = -1; Output = "install job returned no result"; TimedOut = $false }
+            }
+            $results[$r.App.name] = $res
+            Log "  finished: $($r.App.name) (exit $($res.Code))" "Gray"
+        }
+        $running = $stillRunning
+    }
+    return $results
+}
+
+function Install-Apps {
+    param([object[]]$Apps)
+    $okCodes = @(0, -1978335189)
+    $results = Invoke-InstallBatch -Apps $Apps -Throttle 4
+
+    # Retry failures once, one at a time: covers the Windows Installer
+    # single-instance lock (two MSI installs at once) and transient network
+    # errors. Timed-out installs aren't retried (they'd likely hang again).
+    $retry = @($Apps | Where-Object { $okCodes -notcontains $results[$_.name].Code -and -not $results[$_.name].TimedOut })
+    if ($retry.Count -gt 0) {
+        Log "  retrying $($retry.Count) failed install(s) one at a time..." "Yellow"
+        $second = Invoke-InstallBatch -Apps $retry -Throttle 1
+        foreach ($name in $second.Keys) { $results[$name] = $second[$name] }
+    }
+    return $results
+}
+
 $installed  = @()
 $alreadyHad = @()
 $failed     = @()
@@ -430,14 +500,17 @@ if ($SkipApps) {
 } else {
     Log "`nInstalling $($apps.Count) apps..." "Gray"
 
+    $results = Install-Apps -Apps $apps
+
     foreach ($app in $apps) {
         $n = [array]::IndexOf($apps, $app) + 1
         Log "[$n/$($apps.Count)] $($app.name)" "Cyan"
 
-        $versionArg = if ($app.version) { @("-v", $app.version) } else { @() }
-        $out  = winget install --id $app.id -e --silent @versionArg --accept-package-agreements --accept-source-agreements 2>&1
-        $code = $LASTEXITCODE
-        $out | ForEach-Object { Add-Content -Path $LogFile -Value "    $_" }
+        $res  = $results[$app.name]
+        $code = $res.Code
+        foreach ($line in ($res.Output -split "`r?`n")) {
+            if ($line.Trim()) { Add-Content -Path $LogFile -Value "    $line" }
+        }
 
         if ($code -eq 0) {
             Log "  -> installed" "Green"
