@@ -410,10 +410,28 @@ $apps = @(
 Log "`n=== Windows Setup ===" "Cyan"
 
 function Repair-WinGetLicense {
-    # Sideloading the Store-signed App Installer package via Add-AppxPackage
-    # while elevated can leave its license unregistered for this session,
-    # so winget.exe fails immediately with "No applicable app licenses
-    # found" - retrying the same state doesn't help, it needs re-registering.
+    # "No applicable app licenses found" has two known causes:
+    # 1. Sideloading the Store-signed App Installer package via Add-AppxPackage
+    #    while elevated can leave its license unregistered for this session.
+    # 2. The Client License Service (ClipSVC), required for ANY AppX license
+    #    check to succeed at all, is disabled on some fresh/locked-down
+    #    Windows images - re-registering a package does nothing if the
+    #    service that validates licenses can't even run.
+    try {
+        $clipsvc = Get-Service -Name ClipSVC -ErrorAction Stop
+        Log "  ClipSVC (app licensing service): status=$($clipsvc.Status) startType=$($clipsvc.StartType)" "Gray"
+        if ($clipsvc.StartType -eq 'Disabled') {
+            Set-Service -Name ClipSVC -StartupType Manual -ErrorAction Stop
+            Log "  ClipSVC was disabled, set to Manual" "Gray"
+        }
+        if ($clipsvc.Status -ne 'Running') {
+            Start-Service -Name ClipSVC -ErrorAction Stop
+            Log "  started ClipSVC" "Gray"
+        }
+    } catch {
+        Log "  ClipSVC check/start failed: $($_.Exception.Message)" "Yellow"
+    }
+
     try {
         Add-AppxPackage -RegisterByFamilyName -MainPackage "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe" -ErrorAction Stop
         Log "  repaired winget app license registration" "Gray"
@@ -469,7 +487,11 @@ if ($wingetBefore) {
     Log "winget is installed but not responding yet, continuing anyway" "Yellow"
 }
 Write-Host "Checking for winget update..." -NoNewline
-winget upgrade --id Microsoft.AppInstaller --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+try {
+    # Same native-launch-failure caveat as Get-WingetVersion: 2>&1 doesn't
+    # catch this error type, it has to be a real try/catch.
+    winget upgrade --id Microsoft.AppInstaller --silent --accept-package-agreements --accept-source-agreements *>&1 | Out-Null
+} catch {}
 $wingetAfter = Wait-WingetReady
 if ($wingetAfter -and $wingetAfter -ne $wingetBefore) {
     Log "updated to $wingetAfter" "Green"
