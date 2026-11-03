@@ -457,14 +457,34 @@ function Repair-WinGetLicense {
         Log "  package diagnostics failed: $($_.Exception.Message)" "Yellow"
     }
 
+    $anyRepair = $false
     try {
         Add-AppxPackage -RegisterByFamilyName -MainPackage "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe" -ErrorAction Stop
-        Log "  repaired winget app license registration" "Gray"
-        return $true
+        Log "  re-registered by family name" "Gray"
+        $anyRepair = $true
     } catch {
-        Log "  winget license repair failed: $($_.Exception.Message)" "Yellow"
-        return $false
+        Log "  re-register by family name failed: $($_.Exception.Message)" "Yellow"
     }
+
+    # A package can show Status=Ok (as confirmed above) and still fail to
+    # launch - re-registering by family name alone hasn't been enough on
+    # some machines. Registering directly from its AppXManifest.xml forces
+    # a more thorough re-registration that catches inconsistencies the
+    # family-name lookup doesn't, and is the standard fix for "AppX package
+    # looks fine but won't launch" issues generally, not just winget.
+    try {
+        $installedPkg = Get-AppxPackage -Name "Microsoft.DesktopAppInstaller" -ErrorAction Stop | Select-Object -First 1
+        $manifestPath = Join-Path $installedPkg.InstallLocation "AppXManifest.xml"
+        if (Test-Path $manifestPath) {
+            Add-AppxPackage -DisableDevelopmentMode -Register $manifestPath -ErrorAction Stop
+            Log "  re-registered via AppXManifest.xml" "Gray"
+            $anyRepair = $true
+        }
+    } catch {
+        Log "  manifest re-register failed: $($_.Exception.Message)" "Yellow"
+    }
+
+    return $anyRepair
 }
 
 $script:wingetLicenseRepairAttempted = $false
