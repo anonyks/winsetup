@@ -36,7 +36,23 @@ if (-not (Test-IsAdmin)) {
         # is a classic obfuscation pattern that trips antivirus heuristics
         # even when, like here, the decoded content is just a plain command.
         $scriptPath = "$env:TEMP\winsetup_$(Get-Random).ps1"
-        Invoke-WebRequest -Uri $SetupUrl -OutFile $scriptPath -UseBasicParsing
+        $downloadOk = $false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Invoke-WebRequest -Uri $SetupUrl -OutFile $scriptPath -UseBasicParsing -ErrorAction Stop
+                # A truncated/interrupted download would otherwise only
+                # surface as a confusing parser error deep inside the
+                # elevated window - verify it's a complete, valid script first.
+                $parseErrors = $null
+                [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$parseErrors) | Out-Null
+                if ($parseErrors.Count -eq 0) { $downloadOk = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 1
+        }
+        if (-not $downloadOk) {
+            Write-Host "Could not download a complete copy of setup.ps1 after 3 attempts. Check your connection and try again." -ForegroundColor Red
+            exit 1
+        }
     }
 
     # -NoExit keeps the elevated window open once the script finishes (or
