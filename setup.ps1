@@ -417,19 +417,25 @@ function Repair-WinGetLicense {
     #    check to succeed at all, is disabled on some fresh/locked-down
     #    Windows images - re-registering a package does nothing if the
     #    service that validates licenses can't even run.
-    try {
-        $clipsvc = Get-Service -Name ClipSVC -ErrorAction Stop
-        Log "  ClipSVC (app licensing service): status=$($clipsvc.Status) startType=$($clipsvc.StartType)" "Gray"
-        if ($clipsvc.StartType -eq 'Disabled') {
-            Set-Service -Name ClipSVC -StartupType Manual -ErrorAction Stop
-            Log "  ClipSVC was disabled, set to Manual" "Gray"
+    # ClipSVC handles license checks; AppXSvc handles the actual package
+    # activation those checks are part of - only checked ClipSVC before,
+    # which came back healthy without fixing anything, so AppXSvc (the more
+    # fundamental of the two) is worth ruling in or out too.
+    foreach ($svcName in @('ClipSVC', 'AppXSvc')) {
+        try {
+            $svc = Get-Service -Name $svcName -ErrorAction Stop
+            Log "  $svcName (app deployment/licensing service): status=$($svc.Status) startType=$($svc.StartType)" "Gray"
+            if ($svc.StartType -eq 'Disabled') {
+                Set-Service -Name $svcName -StartupType Manual -ErrorAction Stop
+                Log "  $svcName was disabled, set to Manual" "Gray"
+            }
+            if ($svc.Status -ne 'Running') {
+                Start-Service -Name $svcName -ErrorAction Stop
+                Log "  started $svcName" "Gray"
+            }
+        } catch {
+            Log "  $svcName check/start failed: $($_.Exception.Message)" "Yellow"
         }
-        if ($clipsvc.Status -ne 'Running') {
-            Start-Service -Name ClipSVC -ErrorAction Stop
-            Log "  started ClipSVC" "Gray"
-        }
-    } catch {
-        Log "  ClipSVC check/start failed: $($_.Exception.Message)" "Yellow"
     }
 
     # Diagnostics: two fix attempts (re-registration, ClipSVC) haven't
@@ -452,6 +458,13 @@ function Repair-WinGetLicense {
         $sideloadPolicy = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx" -Name "AllowAllTrustedApps" -ErrorAction SilentlyContinue).AllowAllTrustedApps
         if ($null -ne $sideloadPolicy -and $sideloadPolicy -eq 0) {
             Log "  Group Policy blocks sideloaded app execution (AllowAllTrustedApps=0) - this is almost certainly the real cause" "Red"
+        }
+        # Desktop App Installer's licensing checks can have a soft dependency
+        # on the Store platform component being present, even for a
+        # sideloaded install - some stripped-down VM images remove it.
+        $storePkg = Get-AppxPackage -Name "Microsoft.WindowsStore" -ErrorAction SilentlyContinue
+        if (-not $storePkg) {
+            Log "  Microsoft Store package not present on this machine - may be a stripped-down image missing app platform components" "Yellow"
         }
     } catch {
         Log "  package diagnostics failed: $($_.Exception.Message)" "Yellow"
