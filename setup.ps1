@@ -80,6 +80,12 @@ if ($buildNumber -lt 19041) {
     exit 1
 }
 
+# ProductType: 1 = Workstation, 2 = Domain Controller, 3 = Server. Windows
+# Server doesn't support the Store/AppX licensing platform winget's
+# execution alias depends on - no local repair can fix that, so apps get
+# installed via direct download instead of winget on Server.
+$isServerEdition = (Get-CimInstance -ClassName Win32_OperatingSystem).ProductType -ne 1
+
 # Resolves the real Desktop path even when it's redirected (OneDrive Known
 # Folder Move is common on managed/corporate Windows images), instead of
 # assuming the default under USERPROFILE.
@@ -404,6 +410,35 @@ $apps = @(
     @{ id = "Microsoft.VisualStudioCode";     name = "VS Code" }
 )
 
+function Get-NppDownloadUrl {
+    # Notepad++ assets are version-named (no fixed-filename "latest" alias
+    # like winget-cli has), so the actual URL is resolved from the GitHub
+    # API at runtime instead of being hardcoded - this one never goes stale.
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/notepad-plus-plus/notepad-plus-plus/releases/latest" -UseBasicParsing -TimeoutSec 15
+        $asset = $release.assets | Where-Object { $_.name -match 'Installer\.x64\.exe$' } | Select-Object -First 1
+        return $asset.browser_download_url
+    } catch {
+        return $null
+    }
+}
+
+# Used only on Windows Server (see $isServerEdition) where winget cannot
+# work at all. Each URL and its silent-install flags were verified directly
+# before being hardcoded here. EmEditor is deliberately absent: its download
+# page is behind a Cloudflare challenge that couldn't be scripted around, so
+# rather than guess at an unverified URL it's skipped on Server with a clear
+# message - everything else here was confirmed to actually download.
+$directDownloadApps = @(
+    @{ name = "Brave Browser"; url = "https://laptop-updates.brave.com/latest/winx64"; args = "/silent /install" },
+    @{ name = "Telegram";      url = "https://telegram.org/dl/desktop/win64"; args = "/VERYSILENT /NORESTART" },
+    @{ name = "Python 3.10";   url = "https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe"; args = "/quiet InstallAllUsers=1 PrependPath=1" },
+    @{ name = "Google Drive";  url = "https://dl.google.com/drive-file-stream/GoogleDriveSetup.exe"; args = "--silent --desktop_shortcut" },
+    @{ name = "WinRAR";        url = "https://www.win-rar.com/fileadmin/winrar-versions/winrar/winrar-x64-723.exe"; args = "/S" },
+    @{ name = "Notepad++";     url = { Get-NppDownloadUrl }; args = "/S" },
+    @{ name = "VS Code";       url = "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64"; args = "/VERYSILENT /NORESTART /MERGETASKS=!runcode" }
+)
+
 # -------------------------------------------------------
 # 1. winget check / update
 # -------------------------------------------------------
@@ -541,26 +576,30 @@ function Wait-WingetReady {
     return $null
 }
 
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Install-WinGet
-}
-$wingetBefore = Wait-WingetReady
-if ($wingetBefore) {
-    Log "winget $wingetBefore detected." "Gray"
+if ($isServerEdition) {
+    Log "Windows Server detected - winget's Store/AppX licensing platform isn't supported here, skipping straight to direct-download installs." "Yellow"
 } else {
-    Log "winget is installed but not responding yet, continuing anyway" "Yellow"
-}
-Write-Host "Checking for winget update..." -NoNewline
-try {
-    # Same native-launch-failure caveat as Get-WingetVersion: 2>&1 doesn't
-    # catch this error type, it has to be a real try/catch.
-    winget upgrade --id Microsoft.AppInstaller --silent --accept-package-agreements --accept-source-agreements *>&1 | Out-Null
-} catch {}
-$wingetAfter = Wait-WingetReady
-if ($wingetAfter -and $wingetAfter -ne $wingetBefore) {
-    Log "updated to $wingetAfter" "Green"
-} else {
-    Log "already up to date" "Gray"
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Install-WinGet
+    }
+    $wingetBefore = Wait-WingetReady
+    if ($wingetBefore) {
+        Log "winget $wingetBefore detected." "Gray"
+    } else {
+        Log "winget is installed but not responding yet, continuing anyway" "Yellow"
+    }
+    Write-Host "Checking for winget update..." -NoNewline
+    try {
+        # Same native-launch-failure caveat as Get-WingetVersion: 2>&1 doesn't
+        # catch this error type, it has to be a real try/catch.
+        winget upgrade --id Microsoft.AppInstaller --silent --accept-package-agreements --accept-source-agreements *>&1 | Out-Null
+    } catch {}
+    $wingetAfter = Wait-WingetReady
+    if ($wingetAfter -and $wingetAfter -ne $wingetBefore) {
+        Log "updated to $wingetAfter" "Green"
+    } else {
+        Log "already up to date" "Gray"
+    }
 }
 
 # -------------------------------------------------------
@@ -660,12 +699,67 @@ function Install-Apps {
     return $results
 }
 
+function Install-AppsDirect {
+    # winget-free fallback for Windows Server: download each app's own
+    # installer and run it silently. Returns results in the same
+    # {Code, Output} shape Install-Apps uses, so the summary/logging below
+    # doesn't need to know which path actually ran.
+    param([object[]]$Apps)
+    $results = @{}
+    foreach ($app in $Apps) {
+        $url = if ($app.url -is [scriptblock]) { & $app.url } else { $app.url }
+        if (-not $url) {
+            $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "could not resolve a download URL"; TimedOut = $false }
+            continue
+        }
+
+        $installerPath = "$env:TEMP\$($app.name -replace '[^a-zA-Z0-9]', '')_$(Get-Random).exe"
+        if (-not (Get-FileRobust -Uri $url -OutFile $installerPath)) {
+            $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "download failed"; TimedOut = $false }
+            continue
+        }
+
+        try {
+            $proc = Start-Process -FilePath $installerPath -ArgumentList $app.args -Wait -PassThru -ErrorAction Stop
+            $results[$app.name] = [pscustomobject]@{ Code = $proc.ExitCode; Output = "installer exit code $($proc.ExitCode)"; TimedOut = $false }
+        } catch {
+            $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "failed to launch installer: $($_.Exception.Message)"; TimedOut = $false }
+        } finally {
+            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return $results
+}
+
 $installed  = @()
 $alreadyHad = @()
 $failed     = @()
 
 if ($SkipApps) {
     Log "`nSkipping app installs (-SkipApps)" "Yellow"
+} elseif ($isServerEdition) {
+    Log "`nInstalling $($directDownloadApps.Count) apps via direct download (winget unsupported on Server)..." "Gray"
+    Log "  EmEditor skipped: no verified direct-download URL (install manually)" "Yellow"
+
+    $apps = $directDownloadApps
+    $results = Install-AppsDirect -Apps $apps
+
+    foreach ($app in $apps) {
+        $n = [array]::IndexOf($apps, $app) + 1
+        Log "[$n/$($apps.Count)] $($app.name)" "Cyan"
+
+        $res  = $results[$app.name]
+        $code = $res.Code
+        if ($res.Output) { Add-Content -Path $LogFile -Value "    $($res.Output)" }
+
+        if ($code -eq 0) {
+            Log "  -> installed" "Green"
+            $installed += $app.name
+        } else {
+            Log "  -> FAILED (exit $code)" "Red"
+            $failed += $app.name
+        }
+    }
 } else {
     Log "`nInstalling $($apps.Count) apps..." "Gray"
 
