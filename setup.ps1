@@ -432,6 +432,31 @@ function Repair-WinGetLicense {
         Log "  ClipSVC check/start failed: $($_.Exception.Message)" "Yellow"
     }
 
+    # Diagnostics: two fix attempts (re-registration, ClipSVC) haven't
+    # resolved this on some machines, so log what's actually installed
+    # before guessing again - Status often carries the real reason
+    # (e.g. LicenseIssue, Modified, NotAvailable) as flag text.
+    try {
+        $pkgs = @(Get-AppxPackage -Name "Microsoft.DesktopAppInstaller" -ErrorAction SilentlyContinue)
+        if ($pkgs.Count -eq 0) {
+            Log "  no Microsoft.DesktopAppInstaller package found for current user" "Yellow"
+        } else {
+            foreach ($p in $pkgs) {
+                Log "  package: $($p.PackageFullName) status=[$($p.Status)] signature=$($p.SignatureKind)" "Gray"
+            }
+        }
+        $allUsersPkgs = @(Get-AppxPackage -Name "Microsoft.DesktopAppInstaller" -AllUsers -ErrorAction SilentlyContinue)
+        if ($allUsersPkgs.Count -gt $pkgs.Count) {
+            Log "  $($allUsersPkgs.Count) copies installed across all users (vs $($pkgs.Count) for current user) - possible version conflict" "Yellow"
+        }
+        $sideloadPolicy = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx" -Name "AllowAllTrustedApps" -ErrorAction SilentlyContinue).AllowAllTrustedApps
+        if ($null -ne $sideloadPolicy -and $sideloadPolicy -eq 0) {
+            Log "  Group Policy blocks sideloaded app execution (AllowAllTrustedApps=0) - this is almost certainly the real cause" "Red"
+        }
+    } catch {
+        Log "  package diagnostics failed: $($_.Exception.Message)" "Yellow"
+    }
+
     try {
         Add-AppxPackage -RegisterByFamilyName -MainPackage "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe" -ErrorAction Stop
         Log "  repaired winget app license registration" "Gray"
