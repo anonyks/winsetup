@@ -380,12 +380,42 @@ $apps = @(
 # -------------------------------------------------------
 Log "`n=== Windows Setup ===" "Cyan"
 
+function Repair-WinGetLicense {
+    # Sideloading the Store-signed App Installer package via Add-AppxPackage
+    # while elevated can leave its license unregistered for this session,
+    # so winget.exe fails immediately with "No applicable app licenses
+    # found" - retrying the same state doesn't help, it needs re-registering.
+    try {
+        Add-AppxPackage -RegisterByFamilyName -MainPackage "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe" -ErrorAction Stop
+        Log "  repaired winget app license registration" "Gray"
+        return $true
+    } catch {
+        Log "  winget license repair failed: $($_.Exception.Message)" "Yellow"
+        return $false
+    }
+}
+
+$script:wingetLicenseRepairAttempted = $false
+
 function Get-WingetVersion {
-    # Validate the output: right after AppInstaller installs/updates, the
-    # execution alias can briefly misbehave and print the help text (with
-    # "Unrecognized command: <path>") instead of a version number.
-    $out = (& winget --version 2>&1 | Out-String).Trim()
+    # A native-launch failure like "No applicable app licenses found" is
+    # thrown as a terminating exception that bypasses normal 2>&1 stream
+    # redirection, so it has to be caught explicitly or it leaks straight
+    # to the console instead of being captured here.
+    try {
+        $out = (& winget --version *>&1 | Out-String).Trim()
+    } catch {
+        $out = $_.Exception.Message
+    }
     if ($out -match '^v?\d+(\.\d+)+') { return $out }
+    # Right after AppInstaller installs/updates, the execution alias can
+    # also briefly misbehave and print the help text instead of a version -
+    # that case just falls through here and the caller retries.
+    if ($out -match 'No applicable app licenses' -and -not $script:wingetLicenseRepairAttempted) {
+        $script:wingetLicenseRepairAttempted = $true
+        Log "  winget license not registered for this session, repairing..." "Yellow"
+        Repair-WinGetLicense | Out-Null
+    }
     return $null
 }
 
