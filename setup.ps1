@@ -509,8 +509,32 @@ function Invoke-InstallBatch {
     return $results
 }
 
+function Test-WingetInJob {
+    # Start-Job spawns a separate process, which can resolve winget's AppX
+    # license differently than the main script process - so a working
+    # winget here doesn't guarantee winget install works inside the actual
+    # install jobs below. Checked the same way those jobs run it.
+    $job = Start-Job -ScriptBlock {
+        $ProgressPreference = 'SilentlyContinue'
+        try { (& winget --version *>&1 | Out-String).Trim() } catch { $_.Exception.Message }
+    }
+    $null = Wait-Job -Job $job -Timeout 20
+    $out = Receive-Job -Job $job -ErrorAction SilentlyContinue
+    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    return [bool]($out -match '^v?\d+(\.\d+)+')
+}
+
 function Install-Apps {
     param([object[]]$Apps)
+
+    if (-not (Test-WingetInJob)) {
+        Log "  winget not usable from a background job yet, repairing and rechecking..." "Yellow"
+        Repair-WinGetLicense | Out-Null
+        if (-not (Test-WingetInJob)) {
+            Log "  winget still not usable from a background job - installs below will likely fail" "Red"
+        }
+    }
+
     $okCodes = @(0, -1978335189)
     $results = Invoke-InstallBatch -Apps $Apps -Throttle 4
 
