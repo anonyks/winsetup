@@ -463,8 +463,14 @@ function Repair-WinGetLicense {
         # on the Store platform component being present, even for a
         # sideloaded install - some stripped-down VM images remove it.
         $storePkg = Get-AppxPackage -Name "Microsoft.WindowsStore" -ErrorAction SilentlyContinue
+        $editionId = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "EditionID" -ErrorAction SilentlyContinue).EditionID
+        Log "  Windows edition: $editionId" "Gray"
         if (-not $storePkg) {
-            Log "  Microsoft Store package not present on this machine - may be a stripped-down image missing app platform components" "Yellow"
+            if ($editionId -match 'LTSC') {
+                Log "  LTSC editions ship without the Store/AppX licensing platform by design - winget is not supported here, no local fix exists" "Red"
+            } else {
+                Log "  Microsoft Store package not present on this machine - may be a stripped-down image missing app platform components" "Yellow"
+            }
         }
     } catch {
         Log "  package diagnostics failed: $($_.Exception.Message)" "Yellow"
