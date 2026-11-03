@@ -1042,7 +1042,18 @@ if (-not $shouldLaunch) {
             $appPath = & $app.pathFinder
             if ($appPath -and (Test-Path $appPath)) {
                 try {
-                    Start-Process $appPath -WindowStyle Hidden -ErrorAction Stop
+                    # VS Code (Electron) is known to explicitly attach to a
+                    # parent console for debug logging when one is available,
+                    # which bleeds its startup noise into this window well
+                    # after the script itself has finished. Redirecting its
+                    # streams stops it from having anything to attach to;
+                    # harmless for the other apps too. Start-Process refuses
+                    # the same path for both streams, hence two temp files -
+                    # left in TEMP rather than deleted immediately, since the
+                    # launched app (no -Wait) may still be writing to them.
+                    $stdOut = "$env:TEMP\launch_out_$(Get-Random).log"
+                    $stdErr = "$env:TEMP\launch_err_$(Get-Random).log"
+                    Start-Process $appPath -WindowStyle Hidden -RedirectStandardOutput $stdOut -RedirectStandardError $stdErr -ErrorAction Stop
                     Log "  launched: $($app.name)" "Green"
                 } catch {
                     Log "  failed to launch: $($app.name) ($($_.Exception.Message))" "Yellow"
