@@ -28,14 +28,19 @@ if (-not (Test-IsAdmin)) {
     if ($NoLaunch) { $switchArgs += "-NoLaunch" }
 
     if ($PSCommandPath) {
-        $scriptPath = $PSCommandPath -replace "'", "''"
-        $command = "& '$scriptPath' $($switchArgs -join ' ')"
+        $scriptPath = $PSCommandPath
     } else {
-        $command = "irm $SetupUrl | iex"
+        # Running via `irm ... | iex` with no backing file - fetch the script
+        # to a temp file so the elevated relaunch can use -File instead of
+        # -EncodedCommand. Base64-encoded command + -ExecutionPolicy Bypass
+        # is a classic obfuscation pattern that trips antivirus heuristics
+        # even when, like here, the decoded content is just a plain command.
+        $scriptPath = "$env:TEMP\winsetup_$(Get-Random).ps1"
+        Invoke-WebRequest -Uri $SetupUrl -OutFile $scriptPath -UseBasicParsing
     }
 
-    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedCommand) -Verb RunAs
+    $relaunchArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath) + $switchArgs
+    Start-Process -FilePath "powershell.exe" -ArgumentList $relaunchArgs -Verb RunAs
     exit
 }
 
