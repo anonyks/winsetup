@@ -39,8 +39,16 @@ if (-not (Test-IsAdmin)) {
         Invoke-WebRequest -Uri $SetupUrl -OutFile $scriptPath -UseBasicParsing
     }
 
-    $relaunchArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath) + $switchArgs
-    Start-Process -FilePath "powershell.exe" -ArgumentList $relaunchArgs -Verb RunAs
+    # -NoExit keeps the elevated window open once the script finishes (or
+    # errors out early) instead of it flashing closed with nothing visible.
+    $relaunchArgs = @("-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $scriptPath) + $switchArgs
+    try {
+        Start-Process -FilePath "powershell.exe" -ArgumentList $relaunchArgs -Verb RunAs -ErrorAction Stop
+    } catch {
+        Write-Host "Could not restart as Administrator: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "If a UAC prompt appeared, make sure to click Yes." -ForegroundColor Yellow
+        exit 1
+    }
     exit
 }
 
