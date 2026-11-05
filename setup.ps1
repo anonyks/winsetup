@@ -883,12 +883,25 @@ if ($pythonExe -and (Test-Path $pythonExe)) {
     $pythonScripts = Join-Path $pythonDir "Scripts"
     [System.Environment]::SetEnvironmentVariable("PYTHON_HOME", $pythonDir, "User")
     $curPath  = [System.Environment]::GetEnvironmentVariable("PATH", "User")
-    $addPaths = @($pythonDir, $pythonScripts) | Where-Object { $curPath -notlike "*$_*" }
+    $candidatePaths = @($pythonDir, $pythonScripts)
+
+    # pip falls back to installing into this per-user folder (and creates
+    # it on first use) whenever it's run without admin rights after a
+    # system-wide Python install, but never adds it to PATH itself - a
+    # missing PATH entry is silently skipped when resolving a command, so
+    # adding it now means that fallback just works the first time it
+    # happens instead of needing a manual PATH fix afterward.
+    $pyVerTag = & $pythonExe -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>$null
+    if ($pyVerTag) {
+        $candidatePaths += Join-Path $env:APPDATA "Python\Python$pyVerTag\Scripts"
+    }
+
+    $addPaths = $candidatePaths | Where-Object { $curPath -notlike "*$_*" }
     if ($addPaths) {
         [System.Environment]::SetEnvironmentVariable("PATH", ($curPath + ";" + ($addPaths -join ";")), "User")
     }
     Log "  PYTHON_HOME = $pythonDir" "Green"
-    Log "  PATH updated with Python and Scripts" "Green"
+    Log "  PATH updated with Python, Scripts, and per-user pip Scripts" "Green"
 } else {
     Log "  Python not found, skipping env vars" "Yellow"
 }
