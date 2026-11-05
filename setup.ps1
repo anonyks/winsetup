@@ -1037,6 +1037,26 @@ $null = SetReg $cdm "SubscribedContent-353698Enabled" 0 "DWord" "Timeline sugges
 # Disable telemetry
 $null = SetReg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 0 "DWord" "telemetry"
 
+# Stop Windows Update from auto-rebooting while someone's logged on. This
+# doesn't disable updates themselves, just the unattended restart - updates
+# still download/install, they just wait to be restarted manually.
+$auPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU"
+$null = SetReg $auPath "NoAutoRebootWithLoggedOnUsers" 1 "DWord" "no auto-restart for updates while logged on"
+
+# Belt and suspenders: Windows Update's own reboot-trigger scheduled task,
+# in case the policy above doesn't catch every path to a restart.
+try {
+    $rebootTask = Get-ScheduledTask -TaskName "Reboot" -TaskPath "\Microsoft\Windows\UpdateOrchestrator\" -ErrorAction SilentlyContinue
+    if ($rebootTask -and $rebootTask.State -ne 'Disabled') {
+        $rebootTask | Disable-ScheduledTask -ErrorAction Stop | Out-Null
+        Log "  disabled: Windows Update reboot task" "Green"
+    } elseif ($rebootTask) {
+        Log "  already disabled: Windows Update reboot task" "Gray"
+    }
+} catch {
+    Log "  Windows Update reboot task disable failed: $($_.Exception.Message)" "Yellow"
+}
+
 # Dark theme
 $themePath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
 if (SetReg $themePath "AppsUseLightTheme"    0 "DWord" "dark theme (apps)") { $explorerRestartNeeded = $true }
