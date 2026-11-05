@@ -703,33 +703,105 @@ function Install-Apps {
     return $results
 }
 
-function Install-AppsDirect {
-    # winget-free fallback for Windows Server: download each app's own
-    # installer and run it silently. Returns results in the same
-    # {Code, Output} shape Install-Apps uses, so the summary/logging below
-    # doesn't need to know which path actually ran.
-    param([object[]]$Apps)
-    $results = @{}
-    foreach ($app in $Apps) {
-        $url = if ($app.url -is [scriptblock]) { & $app.url } else { $app.url }
-        if (-not $url) {
-            $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "could not resolve a download URL"; TimedOut = $false }
-            continue
-        }
+function Invoke-DirectInstallBatch {
+    # winget-free fallback for Windows Server/LTSC, mirroring Invoke-InstallBatch's
+    # job-based parallelism and progress logging exactly. Installers are saved
+    # into the real Downloads folder (not a hidden temp path) and kept there,
+    # not deleted after install.
+    param([object[]]$Apps, [int]$Throttle = 4, [int]$JobTimeoutSec = 900)
+    $downloadsDir = Get-DownloadsFolder
 
-        $installerPath = "$env:TEMP\$($app.name -replace '[^a-zA-Z0-9]', '')_$(Get-Random).exe"
-        if (-not (Get-FileRobust -Uri $url -OutFile $installerPath)) {
-            $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "download failed"; TimedOut = $false }
-            continue
-        }
-
+    $installBlock = {
+        param($name, $url, $instArgs, $downloadsDir)
+        $ProgressPreference = 'SilentlyContinue'
         try {
-            $proc = Start-Process -FilePath $installerPath -ArgumentList $app.args -Wait -PassThru -ErrorAction Stop
-            $results[$app.name] = [pscustomobject]@{ Code = $proc.ExitCode; Output = "installer exit code $($proc.ExitCode)"; TimedOut = $false }
+            $fileName = "$($name -replace '[^a-zA-Z0-9]', '')_$([IO.Path]::GetRandomFileName().Replace('.',''))setup.exe"
+            $installerPath = Join-Path $downloadsDir $fileName
+            Invoke-WebRequest -Uri $url -OutFile $installerPath -UseBasicParsing -ErrorAction Stop -TimeoutSec 120
+            $proc = Start-Process -FilePath $installerPath -ArgumentList $instArgs -Wait -PassThru -ErrorAction Stop
+            [pscustomobject]@{ Code = $proc.ExitCode; Output = "installer exit code $($proc.ExitCode); saved to $installerPath"; TimedOut = $false }
         } catch {
-            $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "failed to launch installer: $($_.Exception.Message)"; TimedOut = $false }
-        } finally {
-            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+            [pscustomobject]@{ Code = -1; Output = $_.Exception.Message; TimedOut = $false }
+        }
+    }
+
+    $results = @{}
+    $pending = New-Object System.Collections.Queue
+    foreach ($a in $Apps) { $pending.Enqueue($a) }
+    $running = @()
+
+    while ($pending.Count -gt 0 -or $running.Count -gt 0) {
+        while ($pending.Count -gt 0 -and $running.Count -lt $Throttle) {
+            $app = $pending.Dequeue()
+            $url = if ($app.url -is [scriptblock]) { & $app.url } else { $app.url }
+            if (-not $url) {
+                $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "could not resolve a download URL"; TimedOut = $false }
+                Log "  skipped: $($app.name) (no download URL)" "Red"
+                continue
+            }
+            $job = Start-Job -ScriptBlock $installBlock -ArgumentList $app.name, $url, $app.args, $downloadsDir
+            $running += [pscustomobject]@{ Job = $job; App = $app; Started = Get-Date }
+            Log "  started: $($app.name)" "Gray"
+        }
+
+        Start-Sleep -Milliseconds 500
+        $stillRunning = @()
+        foreach ($r in $running) {
+            $timedOut = ((Get-Date) - $r.Started).TotalSeconds -gt $JobTimeoutSec
+            if ($r.Job.State -eq 'Running' -and -not $timedOut) { $stillRunning += $r; continue }
+
+            if ($r.Job.State -eq 'Running') { Stop-Job -Job $r.Job -ErrorAction SilentlyContinue }
+            $res = @(Receive-Job -Job $r.Job -ErrorAction SilentlyContinue) |
+                Where-Object { $_.PSObject.Properties['Code'] } | Select-Object -Last 1
+            Remove-Job -Job $r.Job -Force -ErrorAction SilentlyContinue
+
+            if ($timedOut) {
+                $res = [pscustomobject]@{ Code = -1; Output = "timed out after ${JobTimeoutSec}s"; TimedOut = $true }
+            } elseif (-not $res) {
+                $res = [pscustomobject]@{ Code = -1; Output = "install job returned no result"; TimedOut = $false }
+            }
+            $results[$r.App.name] = $res
+            Log "  finished: $($r.App.name) (exit $($res.Code))" "Gray"
+        }
+        $running = $stillRunning
+    }
+    return $results
+}
+
+function Install-AppsDirect {
+    # Same two-stage shape as Install-Apps: a fast parallel pass, then a
+    # slower one-at-a-time retry (using Get-FileRobust's full browser-fallback
+    # robustness, not available inside a parallel job) for whatever failed.
+    param([object[]]$Apps)
+    $okCodes = @(0)
+    $results = Invoke-DirectInstallBatch -Apps $Apps -Throttle 4
+
+    $retry = @($Apps | Where-Object { $okCodes -notcontains $results[$_.name].Code -and -not $results[$_.name].TimedOut })
+    if ($retry.Count -gt 0) {
+        Log "  retrying $($retry.Count) failed install(s) one at a time..." "Yellow"
+        $downloadsDir = Get-DownloadsFolder
+        foreach ($app in $retry) {
+            $url = if ($app.url -is [scriptblock]) { & $app.url } else { $app.url }
+            if (-not $url) {
+                $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "could not resolve a download URL"; TimedOut = $false }
+                Log "  skipped: $($app.name) (no download URL)" "Red"
+                continue
+            }
+            Log "  started: $($app.name)" "Gray"
+            $fileName = "$($app.name -replace '[^a-zA-Z0-9]', '')_$(Get-Random)setup.exe"
+            $installerPath = Join-Path $downloadsDir $fileName
+            if (-not (Get-FileRobust -Uri $url -OutFile $installerPath)) {
+                $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "download failed"; TimedOut = $false }
+                Log "  finished: $($app.name) (download failed)" "Red"
+                continue
+            }
+            try {
+                $proc = Start-Process -FilePath $installerPath -ArgumentList $app.args -Wait -PassThru -ErrorAction Stop
+                $results[$app.name] = [pscustomobject]@{ Code = $proc.ExitCode; Output = "installer exit code $($proc.ExitCode); saved to $installerPath"; TimedOut = $false }
+            } catch {
+                $results[$app.name] = [pscustomobject]@{ Code = -1; Output = "failed to launch installer: $($_.Exception.Message)"; TimedOut = $false }
+            }
+            Log "  finished: $($app.name) (exit $($results[$app.name].Code))" "Gray"
         }
     }
     return $results
@@ -746,21 +818,19 @@ if ($SkipApps) {
     Log "  EmEditor skipped: no verified direct-download URL (install manually)" "Yellow"
 
     $apps = $directDownloadApps
+    # Install-AppsDirect already logs "started: name" / "finished: name
+    # (exit N)" live as each job completes, matching the winget path's
+    # style, so this loop just tallies the already-reported results.
     $results = Install-AppsDirect -Apps $apps
 
     foreach ($app in $apps) {
-        $n = [array]::IndexOf($apps, $app) + 1
-        Log "[$n/$($apps.Count)] $($app.name)" "Cyan"
-
         $res  = $results[$app.name]
         $code = $res.Code
         if ($res.Output) { Add-Content -Path $LogFile -Value "    $($res.Output)" }
 
         if ($code -eq 0) {
-            Log "  -> installed" "Green"
             $installed += $app.name
         } else {
-            Log "  -> FAILED (exit $code)" "Red"
             $failed += $app.name
         }
     }
