@@ -80,11 +80,16 @@ if ($buildNumber -lt 19041) {
     exit 1
 }
 
-# ProductType: 1 = Workstation, 2 = Domain Controller, 3 = Server. Windows
-# Server doesn't support the Store/AppX licensing platform winget's
-# execution alias depends on - no local repair can fix that, so apps get
-# installed via direct download instead of winget on Server.
-$isServerEdition = (Get-CimInstance -ClassName Win32_OperatingSystem).ProductType -ne 1
+# Neither Windows Server nor Enterprise LTSC ships the Store/AppX licensing
+# platform winget's execution alias depends on - no local repair can fix
+# that (confirmed the hard way on both), so apps get installed via direct
+# download instead of winget on either.
+# ProductType: 1 = Workstation, 2 = Domain Controller, 3 = Server.
+# EditionID for LTSC SKUs keeps the old "S"/LTSB-era naming internally
+# (EnterpriseS, EnterpriseSN, IoTEnterpriseS) even though Microsoft
+# externally renamed the channel to LTSC years ago.
+$editionId = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "EditionID" -ErrorAction SilentlyContinue).EditionID
+$isServerOrLtsc = ((Get-CimInstance -ClassName Win32_OperatingSystem).ProductType -ne 1) -or ($editionId -match 'EnterpriseS|IoTEnterpriseS')
 
 # Resolves the real Desktop path even when it's redirected (OneDrive Known
 # Folder Move is common on managed/corporate Windows images), instead of
@@ -423,7 +428,7 @@ function Get-NppDownloadUrl {
     }
 }
 
-# Used only on Windows Server (see $isServerEdition) where winget cannot
+# Used only on Server/LTSC (see $isServerOrLtsc) where winget cannot
 # work at all. Each URL and its silent-install flags were verified directly
 # before being hardcoded here. EmEditor is deliberately absent: its download
 # page is behind a Cloudflare challenge that couldn't be scripted around, so
@@ -498,11 +503,10 @@ function Repair-WinGetLicense {
         # on the Store platform component being present, even for a
         # sideloaded install - some stripped-down VM images remove it.
         $storePkg = Get-AppxPackage -Name "Microsoft.WindowsStore" -ErrorAction SilentlyContinue
-        $editionId = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -Name "EditionID" -ErrorAction SilentlyContinue).EditionID
         Log "  Windows edition: $editionId" "Gray"
         if (-not $storePkg) {
-            if ($editionId -match 'LTSC') {
-                Log "  LTSC editions ship without the Store/AppX licensing platform by design - winget is not supported here, no local fix exists" "Red"
+            if ($isServerOrLtsc) {
+                Log "  Server/LTSC editions ship without the Store/AppX licensing platform by design - winget is not supported here, no local fix exists" "Red"
             } else {
                 Log "  Microsoft Store package not present on this machine - may be a stripped-down image missing app platform components" "Yellow"
             }
@@ -576,8 +580,8 @@ function Wait-WingetReady {
     return $null
 }
 
-if ($isServerEdition) {
-    Log "Windows Server detected - winget's Store/AppX licensing platform isn't supported here, skipping straight to direct-download installs." "Yellow"
+if ($isServerOrLtsc) {
+    Log "Windows Server or LTSC detected ($editionId) - winget's Store/AppX licensing platform isn't supported here, skipping straight to direct-download installs." "Yellow"
 } else {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Install-WinGet
@@ -737,8 +741,8 @@ $failed     = @()
 
 if ($SkipApps) {
     Log "`nSkipping app installs (-SkipApps)" "Yellow"
-} elseif ($isServerEdition) {
-    Log "`nInstalling $($directDownloadApps.Count) apps via direct download (winget unsupported on Server)..." "Gray"
+} elseif ($isServerOrLtsc) {
+    Log "`nInstalling $($directDownloadApps.Count) apps via direct download (winget unsupported on Server/LTSC)..." "Gray"
     Log "  EmEditor skipped: no verified direct-download URL (install manually)" "Yellow"
 
     $apps = $directDownloadApps
